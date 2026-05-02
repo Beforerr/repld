@@ -249,8 +249,10 @@ func main() {
 	case "trace":
 		fs := flag.NewFlagSet("trace", flag.ExitOnError)
 		traceLevel := fs.String("trace", first(*traceFlag, "full"), "Error traceback level: short, smart, or full")
+		traceProject := fs.String("project", *projectFlag, "Julia project directory")
+		traceSession := fs.String("session", *sessionFlag, "Named session label")
 		fs.Parse(args[1:])
-		cmdTrace(*socketFlag, *projectFlag, *sessionFlag, *traceLevel)
+		cmdTrace(*socketFlag, *traceProject, *traceSession, *traceLevel)
 
 	case "stop":
 		run(*socketFlag, protocolRequest{Action: "stop"}, false)
