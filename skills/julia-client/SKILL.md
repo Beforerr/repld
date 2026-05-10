@@ -3,14 +3,13 @@ name: julia-client
 description: "Run Julia code in persistent sessions: setup once, then reuse variables, imports, and project state across commands. Use for efficient Julia execution, testing, and development."
 ---
 
-## Examples
+## Preferred workflow
+
+Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 'using MyPackage; x = load_fixture()'`, then `julia-client -E 'MyPackage.transform(x)'` to display results while reusing session. After editing package code, run same command again; `Revise` updates definitions automatically. Do not repeat imports, fixture setup, or `--project=.` for the current directory.
+
+## Other Examples
 
 ```bash
-julia-client -e 'using MyPackage; x = load_fixture()' # Setup once; omit default --project=. for cwd
-julia-client -E 'MyPackage.transform(x)'              # Display result; reuses same session
-# Edit MyPackage.transform, then run again; Revise updates definitions in background
-julia-client -E 'MyPackage.transform(x)'
-
 julia-client --project=test -e 'using ImportPackageOnce' # Different --project = different session with independent state
 julia-client --session scratch -e 'error("test error")' # separate named session
 
@@ -18,16 +17,12 @@ julia-client --session scratch -e 'error("test error")' # separate named session
 julia-client --timeout 300 heavy_script.jl
 
 julia-client trace --session scratch # show the last saved Julia traceback without rerunning
+
+julia-client sessions   # list active sessions
+julia-client stop       # shut down the daemon
 ```
 
 ## Tips
 
-- Treat sessions like REPL, rely on `Revise` for automatic updates, avoid repeating setup. Only use `--fresh` flag when clean state is required.
+- Only use `--fresh` flag when clean state is required.
 - Prefer stacking environments to share dependencies and state across projects, avoiding duplicate setup: `empty!(LOAD_PATH); append!(LOAD_PATH, ["@", "test", "docs", "@v#.#", "@stdlib"])`.
-
-## Session management
-
-```bash
-julia-client sessions   # list active sessions
-julia-client stop       # shut down the daemon
-```

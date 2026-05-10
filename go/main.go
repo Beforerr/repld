@@ -267,12 +267,8 @@ func main() {
 		}
 
 	default:
-		if filepath.Ext(args[0]) == ".jl" {
-			b, err := os.ReadFile(args[0])
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
+		b, err := os.ReadFile(args[0])
+		if err == nil {
 			cmdEval(*socketFlag, string(b), *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
 			return
 		}
