@@ -33,6 +33,8 @@ julia-client -e 'println("hello")'
 
 # Explicit project environment
 julia-client --project /path/to/project -e 'using MyPackage'
+julia-client --project @temp -e 'using Pkg; Pkg.add("Example")'
+julia-client --project @shareAnyname -e 'using Example'
 
 # Read from stdin
 echo 'println("hello")' | julia-client
@@ -58,7 +60,7 @@ Traceback levels:
 A single `julia-client` binary serves as both client and daemon:
 
 - **Client mode** (default) — sends JSON requests over a Unix socket (`~/.local/share/julia-client/julia-daemon.sock`)
-- **Daemon mode** (`julia-client daemon`) — background server managing persistent Julia processes; auto-started on first `eval`, shuts down after 30 minutes of inactivity
+- **Daemon mode** (`julia-client daemon`) — background server managing persistent Julia processes; auto-started on first `eval`, shuts down after 1 hour of inactivity
 
 ## Alternatives
 

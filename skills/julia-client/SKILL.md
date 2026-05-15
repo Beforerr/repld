@@ -1,16 +1,20 @@
 ---
 name: julia-client
-description: "Run Julia code in persistent sessions: setup once, then reuse variables, imports, and project state across commands. Use for efficient Julia execution, testing, and development."
+description: "Evaluate Julia in long-lived background sessions so imports, variables, and project state persist across calls. Use for iterative Julia work — package development, REPL-style experiments, tests, benchmarks — where starting fresh each time would be wasteful."
 ---
 
 ## Preferred workflow
 
-Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 'using MyPackage; x = load_fixture()'`, then `julia-client -E 'MyPackage.transform(x)'` to display results while reusing session. After editing package code, run same command again; `Revise` updates definitions automatically. Do not repeat imports, fixture setup, or `--project=.` for the current directory.
+Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 'using MyPackage; x = load_fixture()'`, then `julia-client -E 'MyPackage.transform(x)'` to display results while reusing session. After editing package code, `Revise` automatically updates definitions. Do not repeat imports, fixture setup, or `--project=.` for the current directory.
+
+- Don't repeat yourself: avoid repeating same setup in every command.
+- Use `--fresh` flag for struct revision (Revise disables by default) or when clean state is required.
 
 ## Other Examples
 
 ```bash
 julia-client --project=test -e 'using ImportPackageOnce' # Different --project = different session with independent state
+julia-client --project=@temp -e 'using Pkg; Pkg.add("Example")' # Temporary throwaway environment
 julia-client --session scratch -e 'error("test error")' # separate named session
 
 # Long-running tasks (first plot, heavy compute): set longer timeout or disable timeout (0)
@@ -21,8 +25,3 @@ julia-client trace --session scratch # show the last saved Julia traceback witho
 julia-client sessions   # list active sessions
 julia-client stop       # shut down the daemon
 ```
-
-## Tips
-
-- Only use `--fresh` flag when clean state is required.
-- Prefer stacking environments to share dependencies and state across projects, avoiding duplicate setup: `empty!(LOAD_PATH); append!(LOAD_PATH, ["@", "test", "docs", "@v#.#", "@stdlib"])`.

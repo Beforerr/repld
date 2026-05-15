@@ -85,6 +85,46 @@ func TestHandleRequest_Stop(t *testing.T) {
 	}
 }
 
+func TestHandleRequest_SessionsShowsRouteAndProject(t *testing.T) {
+	state := newTestState()
+	projectSession := newJuliaSession("@temp", "sentinel", "", nil)
+	namedSession := newJuliaSession("@temp", "sentinel", "julia +1.12", nil)
+	deadSession := newJuliaSession("@shareAnyname", "sentinel", "", nil)
+	deadSession.dead.Store(true)
+	state.manager.sessions["@temp"] = projectSession
+	state.manager.sessions["~temp"] = namedSession
+	state.manager.sessions["@shareAnyname"] = deadSession
+
+	resp := handleRequest(state, protocolRequest{Action: "sessions"})
+	require.Empty(t, resp.Error)
+	require.Equal(t, `Active Julia sessions:
+  project @shareAnyname status=dead
+  project @temp
+  session temp project=@temp julia_cmd=julia +1.12`, resp.Output)
+}
+
+func TestNormalizeProjectArgPreservesJuliaSelectors(t *testing.T) {
+	require.Equal(t, "", normalizeProjectArg(""))
+	require.Equal(t, "@.", normalizeProjectArg("@."))
+	require.Equal(t, "@temp", normalizeProjectArg("@temp"))
+	require.Equal(t, "@shareAnyname", normalizeProjectArg("@shareAnyname"))
+
+	abs, err := filepath.Abs("relative-project")
+	require.NoError(t, err)
+	require.Equal(t, abs, normalizeProjectArg("relative-project"))
+}
+
+func TestSessionManagerKeyPreservesJuliaProjectSelectors(t *testing.T) {
+	manager := newSessionManager()
+	defer manager.shutdown()
+
+	cwd := t.TempDir()
+	require.Equal(t, cwd, manager.key("", "@.", cwd))
+	require.Equal(t, "@temp", manager.key("", "@temp", cwd))
+	require.Equal(t, "@shareAnyname", manager.key("", "@shareAnyname", cwd))
+	require.Equal(t, "~scratch", manager.key("scratch", "@temp", cwd))
+}
+
 // ---- helpers ----
 
 // startTestDaemon launches serveDaemon in a goroutine and returns a stop func and the socket path.

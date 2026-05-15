@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -111,7 +112,7 @@ func mustGetwd() string {
 }
 
 func normalizeProjectArg(project string) string {
-	if project == "" || project == "@." {
+	if project == "" || strings.HasPrefix(project, "@") {
 		return project
 	}
 	projectArg, _ := filepath.Abs(project)
@@ -177,16 +178,16 @@ Usage:
 Eval flags:
   -e, --eval CODE      Evaluate Julia code (omit or use - to read stdin)
   -E, --print CODE     Evaluate Julia code and display the result
-  --project PATH       Julia project directory (passed as --project to Julia)
+  --project PROJECT    Julia project directory or selector (passed as --project to Julia)
   --session LABEL      Named session to create or reuse across directories
   --fresh              Clear the targeted session before evaluating
-  --timeout SECS       Timeout in seconds (0 = no timeout, default: 60)
+  --timeout SECS       Timeout in seconds (0 = no timeout, default: 100)
   --julia-cmd CMD      Custom Julia binary, e.g. "julia +1.11"
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)
 
 Session routing (priority order):
   --session LABEL      Shared by label, regardless of directory
-  --project PATH       Keyed by project path
+  --project PROJECT    Keyed by project path or selector
   (default)            Keyed by current working directory; Julia uses --project=@.
 
 Commands:
@@ -194,7 +195,7 @@ Commands:
   trace                Print the last saved Julia error traceback for this session
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
-    --idle-timeout SECS  Shut down after idle (default: 1800)
+    --idle-timeout SECS  Shut down after idle (default: 3600)
 
 Global flags:
   --socket PATH        Unix socket path (default: %s)
@@ -259,7 +260,7 @@ func main() {
 
 	case "daemon":
 		fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-		idleTimeout := fs.Float64("idle-timeout", 30*60, "Idle timeout in seconds")
+		idleTimeout := fs.Float64("idle-timeout", 60*60, "Idle timeout in seconds")
 		fs.Parse(args[1:])
 		if err := serveDaemon(*socketFlag, time.Duration(float64(time.Second)**idleTimeout)); err != nil {
 			fmt.Fprintln(os.Stderr, err)

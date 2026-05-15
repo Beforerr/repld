@@ -22,7 +22,7 @@ import (
 var juliaClientRuntime string
 
 const (
-	defaultEvalTimeout = 60.0
+	defaultEvalTimeout = 100.0
 	startupTimeout     = 120.0
 )
 
@@ -321,6 +321,9 @@ func (m *SessionManager) key(session, project, cwd string) string {
 		return "~" + session
 	}
 	if project != "" && project != "@." {
+		if strings.HasPrefix(project, "@") {
+			return project
+		}
 		abs, _ := filepath.Abs(project)
 		return abs
 	}
@@ -416,6 +419,7 @@ func (m *SessionManager) lastError(session, project, cwd string) *juliaEvalError
 }
 
 type sessionInfo struct {
+	key      string
 	project  string
 	alive    bool
 	juliaCmd string
@@ -426,8 +430,9 @@ func (m *SessionManager) list() []sessionInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make([]sessionInfo, 0, len(m.sessions))
-	for _, sess := range m.sessions {
+	for key, sess := range m.sessions {
 		info := sessionInfo{
+			key:      key,
 			project:  sess.projectVal,
 			alive:    sess.isAlive(),
 			juliaCmd: sess.juliaCmd,

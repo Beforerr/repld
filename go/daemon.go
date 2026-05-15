@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,13 +77,24 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		if len(sessions) == 0 {
 			return response{Output: "No active Julia sessions."}
 		}
+		sort.Slice(sessions, func(i, j int) bool {
+			return sessions[i].key < sessions[j].key
+		})
 		lines := []string{"Active Julia sessions:"}
 		for _, s := range sessions {
-			status := "alive"
-			if !s.alive {
-				status = "dead"
+			label := s.key
+			if strings.HasPrefix(label, "~") {
+				label = "session " + strings.TrimPrefix(label, "~")
+			} else {
+				label = "project " + label
 			}
-			line := fmt.Sprintf("  %s: %s", s.project, status)
+			line := "  " + label
+			if s.project != "" && s.project != s.key {
+				line += " project=" + s.project
+			}
+			if !s.alive {
+				line += " status=dead"
+			}
 			if s.juliaCmd != "" {
 				line += " julia_cmd=" + s.juliaCmd
 			}
