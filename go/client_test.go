@@ -239,17 +239,28 @@ func TestScriptFile(t *testing.T) {
 	socketPath, stop, _ := startTestDaemon(t)
 	defer stop()
 
-	cmd := exec.Command(os.Args[0], "--socket", socketPath, "testdata/compute.jl")
-	cmd.Env = append(os.Environ(), "TEST_CLI=1")
-	out, err := cmd.Output()
-	stderr := ""
-	if err != nil {
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	scriptPath := filepath.Join(cwd, "testdata", "compute.jl")
+	scriptDir := filepath.Dir(scriptPath)
+	expected := "42\n" + scriptPath + "\n" + scriptDir
+
+	run := func(arg string) string {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "--socket", socketPath, arg)
+		cmd.Env = append(os.Environ(), "TEST_CLI=1")
+		cmd.Dir = cwd
+		out, err := cmd.Output()
+		stderr := ""
 		if e, ok := err.(*exec.ExitError); ok {
 			stderr = string(e.Stderr)
 		}
+		require.NoErrorf(t, err, "stderr:\n%s", stderr)
+		return string(out)
 	}
-	require.NoErrorf(t, err, "script stderr:\n%s", stderr)
-	require.Equal(t, "42\n", string(out))
+
+	require.Equal(t, expected, run(scriptPath), "absolute path")
+	require.Equal(t, expected, run("testdata/compute.jl"), "relative path resolved against client cwd")
 }
 
 func TestPrintResult(t *testing.T) {

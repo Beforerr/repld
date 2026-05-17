@@ -5,10 +5,13 @@ description: "Evaluate Julia in long-lived background sessions so imports, varia
 
 ## Preferred workflow
 
-Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 'using MyPackage; x = load_fixture()'`, then `julia-client -E 'MyPackage.transform(x)'` to display results while reusing session. After editing package code, `Revise` automatically updates definitions. Do not repeat imports, fixture setup, or `--project=.` for the current directory.
+Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 'using MyPackage; x = load_fixture()'`, then `julia-client -E 'MyPackage.transform(x)'` to display results while reusing session. After editing package code, `Revise` automatically updates definitions.
 
-- Don't repeat yourself: avoid repeating same setup in every command.
-- Use `--fresh` flag for struct revision (Revise disables by default) or when clean state is required.
+- Don't repeat yourself
+- Import packages once per session; later calls should use already-loaded names.
+- Avoid repeating fixture/setup code in every command.
+- Session routing: `--session LABEL` > `--project PROJECT`; default to `--project=@.` when omit both.
+- Avoid `--fresh` unless changing struct/type definitions or requiring clean state.
 
 ## Other Examples
 

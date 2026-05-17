@@ -268,9 +268,9 @@ func main() {
 		}
 
 	default:
-		b, err := os.ReadFile(args[0])
-		if err == nil {
-			cmdEval(*socketFlag, string(b), *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
+		if _, err := os.Stat(args[0]); err == nil {
+			code := fmt.Sprintf("cd(%q) do; Base.include(Main, %q); end", mustGetwd(), args[0])
+			cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
 			return
 		}
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
