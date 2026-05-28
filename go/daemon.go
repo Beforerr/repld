@@ -158,8 +158,6 @@ func handleConn(conn net.Conn, state *daemonState) {
 	json.NewEncoder(conn).Encode(handleRequest(state, req))
 }
 
-// handleStreamingEval writes NDJSON frames to conn: zero-or-more
-// {"chunk": "..."} frames followed by a single {"done": true, "error": "..."}.
 func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn) {
 	state.lastRequest.Store(time.Now().UnixNano())
 	enc := json.NewEncoder(conn)
@@ -173,8 +171,14 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return
 	}
-	onLine := func(line string) { emit(streamFrame{Chunk: line}) }
-	_, err = sess.execute(req.Code, req.PrintResult, onLine)
+	onChunk := func(data string, isStderr bool) {
+		if isStderr {
+			emit(streamFrame{Stderr: data})
+		} else {
+			emit(streamFrame{Chunk: data})
+		}
+	}
+	_, err = sess.execute(req.Code, req.PrintResult, onChunk)
 	if err != nil {
 		if !sess.isAlive() {
 			state.manager.remove(req.Session, req.Project, req.Cwd)

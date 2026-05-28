@@ -64,17 +64,13 @@ type protocolRequest struct {
 	TraceLevel  string `json:"trace_level,omitempty"`
 }
 
-// streamFrame is one wire frame in a streaming eval reply. Non-final frames
-// carry a chunk; the final frame has Done=true and optional Error.
 type streamFrame struct {
-	Chunk string `json:"chunk,omitempty"`
-	Done  bool   `json:"done,omitempty"`
-	Error string `json:"error,omitempty"`
+	Chunk  string `json:"chunk,omitempty"`
+	Stderr string `json:"stderr,omitempty"`
+	Done   bool   `json:"done,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
-// run dials the daemon, sends req, and writes the result to stdout/stderr.
-// For eval the daemon replies with NDJSON streaming frames; chunks are
-// written to stdout as they arrive. Other actions reply with a single frame.
 func run(socketPath string, req protocolRequest, startIfNeeded bool) {
 	conn, err := connect(socketPath, startIfNeeded)
 	if err != nil {
@@ -102,7 +98,12 @@ func run(socketPath string, req protocolRequest, startIfNeeded bool) {
 				}
 				return
 			}
-			fmt.Print(f.Chunk)
+			if f.Stderr != "" {
+				fmt.Fprint(os.Stderr, f.Stderr)
+			}
+			if f.Chunk != "" {
+				fmt.Print(f.Chunk)
+			}
 		}
 	}
 

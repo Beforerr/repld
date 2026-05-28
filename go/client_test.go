@@ -373,13 +373,14 @@ func streamRequest(t *testing.T, socketPath string, req protocolRequest) (chunks
 			final = f
 			return
 		}
-		chunks = append(chunks, streamChunk{data: f.Chunk, at: time.Now()})
+		chunks = append(chunks, streamChunk{data: f.Chunk, stderr: f.Stderr, at: time.Now()})
 	}
 }
 
 type streamChunk struct {
-	data string
-	at   time.Time
+	data   string
+	stderr string
+	at     time.Time
 }
 
 func TestStreamingEvalDeliversChunksIncrementally(t *testing.T) {
@@ -421,6 +422,32 @@ func TestStreamingEvalDeliversChunksIncrementally(t *testing.T) {
 	require.Falsef(t, bTime.IsZero(), "no chunk contained 'b'; chunks=%v", chunks)
 	require.Greaterf(t, bTime.Sub(aTime), 150*time.Millisecond,
 		"'b' should arrive measurably after 'a' (actual gap %v)", bTime.Sub(aTime))
+}
+
+func TestStreamingSeparatesStdoutFromStderr(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	sendRequest(t, socketPath, protocolRequest{Action: "eval", Code: "1+1", Cwd: cwd})
+
+	chunks, final := streamRequest(t, socketPath, protocolRequest{
+		Action: "eval",
+		Code:   `println(stdout, "OUT_LINE"); flush(stdout); println(stderr, "ERR_LINE"); flush(stderr)`,
+		Cwd:    cwd,
+	})
+	require.True(t, final.Done)
+	require.Empty(t, final.Error)
+
+	var stdoutBuf, stderrBuf strings.Builder
+	for _, c := range chunks {
+		stdoutBuf.WriteString(c.data)
+		stderrBuf.WriteString(c.stderr)
+	}
+	require.Contains(t, stdoutBuf.String(), "OUT_LINE")
+	require.NotContains(t, stdoutBuf.String(), "ERR_LINE", "stderr output must not leak into stdout chunks")
+	require.Contains(t, stderrBuf.String(), "ERR_LINE")
+	require.NotContains(t, stderrBuf.String(), "OUT_LINE", "stdout output must not leak into stderr chunks")
 }
 
 func TestStreamingEvalSurfacesError(t *testing.T) {
