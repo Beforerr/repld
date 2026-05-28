@@ -200,6 +200,21 @@ func (s *JuliaSession) parseJuliaError(output string) (string, *juliaEvalError) 
 // Returns stdout buffer (for parseJuliaError); stderr streams via onChunk only.
 // HasSuffix sentinel detection tolerates unterminated user lines.
 func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStderr bool), timeoutSecs float64) (string, error) {
+	// stdout and stderr are read by separate goroutines below, but the
+	// consumer (daemon JSON encoder, session log) is not safe for concurrent
+	// writes. Serialize delivery so each chunk is emitted atomically; this also
+	// gives clients a deterministic frame order when merging the two streams
+	// (e.g. shell `2>&1`).
+	var emitMu sync.Mutex
+	emit := onChunk
+	if onChunk != nil {
+		emit = func(data string, isStderr bool) {
+			emitMu.Lock()
+			onChunk(data, isStderr)
+			emitMu.Unlock()
+		}
+	}
+
 	sentinelCmd := fmt.Sprintf(
 		"flush(stderr); println(stderr, \"%s\"); flush(stderr); println(stdout, \"%s\"); flush(stdout)\n",
 		s.sentinel, s.sentinel,
@@ -235,8 +250,8 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 			if strings.HasSuffix(raw, s.sentinel) {
 				if prefix := strings.TrimSuffix(raw, s.sentinel); prefix != "" {
 					buf.WriteString(prefix)
-					if onChunk != nil {
-						onChunk(prefix, false)
+					if emit != nil {
+						emit(prefix, false)
 					}
 				}
 				outCh <- readResult{buf.String(), nil}
@@ -245,8 +260,8 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 			if strings.HasSuffix(raw, startMarker) {
 				if prefix := strings.TrimSuffix(raw, startMarker); prefix != "" {
 					buf.WriteString(prefix)
-					if onChunk != nil {
-						onChunk(prefix, false)
+					if emit != nil {
+						emit(prefix, false)
 					}
 				}
 				buf.WriteString(startMarker + "\n")
@@ -261,8 +276,8 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 			}
 
 			buf.WriteString(line)
-			if onChunk != nil {
-				onChunk(line, false)
+			if emit != nil {
+				emit(line, false)
 			}
 		}
 	}()
@@ -273,8 +288,8 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 			line, err := s.stderr.ReadString('\n')
 			raw := strings.TrimRight(line, "\r\n")
 			if strings.HasSuffix(raw, s.sentinel) {
-				if prefix := strings.TrimSuffix(raw, s.sentinel); prefix != "" && onChunk != nil {
-					onChunk(prefix, true)
+				if prefix := strings.TrimSuffix(raw, s.sentinel); prefix != "" && emit != nil {
+					emit(prefix, true)
 				}
 				errCh <- nil
 				return
@@ -284,8 +299,8 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 				errCh <- err
 				return
 			}
-			if onChunk != nil {
-				onChunk(line, true)
+			if emit != nil {
+				emit(line, true)
 			}
 		}
 	}()
@@ -338,26 +353,37 @@ func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data 
 		hexCode, printResult, s.errorStartMarker(), s.errorEndMarker(),
 	)
 
+	// Tee both streams to the log as they arrive. executeRaw serializes the
+	// callback, so stdout and stderr land interleaved in causal order — the
+	// same view a terminal shows under `2>&1`. (The NDJSON protocol keeps them
+	// tagged for machine consumers; the log is the human-readable record.)
+	sink := onChunk
 	if s.logFile != nil {
 		fmt.Fprintf(s.logFile, "[%s] julia> %s\n", time.Now().Format("15:04:05"), code)
+		sink = func(data string, isStderr bool) {
+			io.WriteString(s.logFile, data)
+			if onChunk != nil {
+				onChunk(data, isStderr)
+			}
+		}
 	}
 
 	s.busySince.Store(time.Now().UnixNano())
 	defer s.busySince.Store(0)
 
-	output, err := s.executeRaw(wrapped, onChunk, 0)
+	output, err := s.executeRaw(wrapped, sink, 0)
 	if err != nil {
 		return "", err
 	}
 	output, juliaErr := s.parseJuliaError(output)
-	if s.logFile != nil && output != "" {
-		fmt.Fprintf(s.logFile, "%s\n\n", output)
-	}
 	if juliaErr != nil {
 		if s.logFile != nil {
-			fmt.Fprintf(s.logFile, "%s\n\n", juliaErr.full)
+			fmt.Fprintf(s.logFile, "\n%s\n\n", juliaErr.full)
 		}
 		return output, juliaErr
+	}
+	if s.logFile != nil {
+		io.WriteString(s.logFile, "\n\n")
 	}
 	return output, nil
 }
