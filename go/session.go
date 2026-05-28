@@ -111,11 +111,11 @@ func (s *JuliaSession) start(workDir string) error {
 	s.stdout = bufio.NewReaderSize(pr, 64*1024*1024)
 
 	// Wait for Julia's interactive prompt to appear
-	if _, err := s.executeRaw("", startupTimeout); err != nil {
+	if _, err := s.executeRaw("", nil, startupTimeout); err != nil {
 		return fmt.Errorf("Julia startup failed: %w", err)
 	}
 	runtimeHex := hex.EncodeToString([]byte(juliaClientRuntime))
-	if _, err := s.executeRaw(fmt.Sprintf(`include_string(Main, String(hex2bytes("%s")), "julia-client runtime")`, runtimeHex), startupTimeout); err != nil {
+	if _, err := s.executeRaw(fmt.Sprintf(`include_string(Main, String(hex2bytes("%s")), "julia-client runtime")`, runtimeHex), nil, startupTimeout); err != nil {
 		return fmt.Errorf("failed to load julia-client runtime: %w", err)
 	}
 	return nil
@@ -164,10 +164,6 @@ func (s *JuliaSession) parseJuliaError(output string) (string, *juliaEvalError) 
 	}
 
 	prefix := output[:idx]
-	if len(prefix) > 0 && prefix[len(prefix)-1] == '\n' {
-		prefix = prefix[:len(prefix)-1]
-	}
-
 	rest := output[idx+len(start)+1:]
 	parts := strings.SplitN(rest, "\n", 4)
 	if len(parts) < 4 {
@@ -191,38 +187,79 @@ func (s *JuliaSession) parseJuliaError(output string) (string, *juliaEvalError) 
 	}
 }
 
-func (s *JuliaSession) executeRaw(code string, timeoutSecs float64) (string, error) {
-	// The sentinel command writes an extra "\n" before the marker so it always
-	// starts on its own line even when the user code didn't end with a newline.
-	// We strip exactly that one "\n" when assembling the result.
+// executeRaw writes code and a sentinel command to stdin, then reads stdout
+// until the sentinel marker is observed. If onLine is non-nil, it is invoked
+// for each user-printed chunk as it arrives. Lines inside the runtime's
+// error block are buffered (for parseJuliaError) but not streamed.
+//
+// The sentinel and error start-marker are detected via HasSuffix so that
+// user code that prints without a trailing newline still terminates cleanly
+// (the marker rides on the tail of the same line). Sentinel collision risk
+// is negligible: the marker contains 16 random hex bytes per session.
+func (s *JuliaSession) executeRaw(code string, onLine func(string), timeoutSecs float64) (string, error) {
 	sentinelCmd := fmt.Sprintf(
-		"flush(stderr); write(stdout, \"\\n\"); println(stdout, \"%s\"); flush(stdout)\n",
+		"flush(stderr); println(stdout, \"%s\"); flush(stdout)\n",
 		s.sentinel,
 	)
 	if _, err := io.WriteString(s.stdin, code+"\n"+sentinelCmd); err != nil {
 		return "", err
 	}
 
+	startMarker := s.errorStartMarker()
+	endMarker := s.errorEndMarker()
 	ch := make(chan readResult, 1)
 	go func() {
 		var buf strings.Builder
+		inErrorBlock := false
 		for {
 			line, err := s.stdout.ReadString('\n')
-			if strings.TrimRight(line, "\r\n") == s.sentinel {
-				// Strip the one "\n" we injected before the sentinel.
-				out := buf.String()
-				if len(out) > 0 && out[len(out)-1] == '\n' {
-					out = out[:len(out)-1]
+			raw := strings.TrimRight(line, "\r\n")
+
+			if inErrorBlock {
+				buf.WriteString(line)
+				if strings.HasPrefix(raw, endMarker) {
+					inErrorBlock = false
 				}
-				ch <- readResult{out, nil}
+				if err != nil {
+					s.dead.Store(true)
+					ch <- readResult{buf.String(), fmt.Errorf("Julia process died during execution.\nOutput before death:\n%s", buf.String())}
+					return
+				}
+				continue
+			}
+
+			if strings.HasSuffix(raw, s.sentinel) {
+				if prefix := strings.TrimSuffix(raw, s.sentinel); prefix != "" {
+					buf.WriteString(prefix)
+					if onLine != nil {
+						onLine(prefix)
+					}
+				}
+				ch <- readResult{buf.String(), nil}
 				return
 			}
+			if strings.HasSuffix(raw, startMarker) {
+				if prefix := strings.TrimSuffix(raw, startMarker); prefix != "" {
+					buf.WriteString(prefix)
+					if onLine != nil {
+						onLine(prefix)
+					}
+				}
+				buf.WriteString(startMarker + "\n")
+				inErrorBlock = true
+				continue
+			}
+
 			if err != nil {
 				s.dead.Store(true)
 				ch <- readResult{buf.String(), fmt.Errorf("Julia process died during execution.\nOutput before death:\n%s", buf.String())}
 				return
 			}
+
 			buf.WriteString(line)
+			if onLine != nil {
+				onLine(line)
+			}
 		}
 	}()
 
@@ -250,7 +287,10 @@ func (s *JuliaSession) executeRaw(code string, timeoutSecs float64) (string, err
 	}
 }
 
-func (s *JuliaSession) execute(code string, printResult bool) (string, error) {
+// execute runs user code via the JuliaClientRuntime wrapper so errors are
+// caught and delivered as a structured *juliaEvalError. If onLine is non-nil,
+// it is invoked for each chunk of user output as it arrives.
+func (s *JuliaSession) execute(code string, printResult bool, onLine func(string)) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -270,7 +310,7 @@ func (s *JuliaSession) execute(code string, printResult bool) (string, error) {
 	s.busySince.Store(time.Now().UnixNano())
 	defer s.busySince.Store(0)
 
-	output, err := s.executeRaw(wrapped, 0)
+	output, err := s.executeRaw(wrapped, onLine, 0)
 	if err != nil {
 		return "", err
 	}

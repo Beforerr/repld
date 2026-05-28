@@ -26,30 +26,6 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 	state.lastRequest.Store(time.Now().UnixNano())
 
 	switch req.Action {
-	case "eval":
-		if req.Fresh {
-			state.manager.restart(req.Session, req.Project, req.Cwd)
-		}
-		sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaCmd)
-		if err != nil {
-			return errResp(err.Error())
-		}
-		output, err := sess.execute(req.Code, req.PrintResult)
-		if err != nil {
-			if !sess.isAlive() {
-				state.manager.remove(req.Session, req.Project, req.Cwd)
-			}
-			if juliaErr, ok := err.(*juliaEvalError); ok {
-				state.manager.recordError(req.Session, req.Project, req.Cwd, juliaErr)
-				return response{
-					Output: output,
-					Error:  formatJuliaError(juliaErr, req.TraceLevel),
-				}
-			}
-			return errResp(err.Error())
-		}
-		return response{Output: output}
-
 	case "trace":
 		err := state.manager.lastError(req.Session, req.Project, req.Cwd)
 		if err == nil {
@@ -175,7 +151,43 @@ func handleConn(conn net.Conn, state *daemonState) {
 		return
 	}
 
+	if req.Action == "eval" {
+		handleStreamingEval(state, req, conn)
+		return
+	}
 	json.NewEncoder(conn).Encode(handleRequest(state, req))
+}
+
+// handleStreamingEval writes NDJSON frames to conn: zero-or-more
+// {"chunk": "..."} frames followed by a single {"done": true, "error": "..."}.
+func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn) {
+	state.lastRequest.Store(time.Now().UnixNano())
+	enc := json.NewEncoder(conn)
+	emit := func(f streamFrame) { _ = enc.Encode(f) }
+
+	if req.Fresh {
+		state.manager.restart(req.Session, req.Project, req.Cwd)
+	}
+	sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaCmd)
+	if err != nil {
+		emit(streamFrame{Done: true, Error: err.Error()})
+		return
+	}
+	onLine := func(line string) { emit(streamFrame{Chunk: line}) }
+	_, err = sess.execute(req.Code, req.PrintResult, onLine)
+	if err != nil {
+		if !sess.isAlive() {
+			state.manager.remove(req.Session, req.Project, req.Cwd)
+		}
+		if juliaErr, ok := err.(*juliaEvalError); ok {
+			state.manager.recordError(req.Session, req.Project, req.Cwd, juliaErr)
+			emit(streamFrame{Done: true, Error: formatJuliaError(juliaErr, req.TraceLevel)})
+			return
+		}
+		emit(streamFrame{Done: true, Error: err.Error()})
+		return
+	}
+	emit(streamFrame{Done: true})
 }
 
 func serveDaemon(socketPath string, idleTimeout time.Duration) error {

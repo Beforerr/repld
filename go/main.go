@@ -64,15 +64,46 @@ type protocolRequest struct {
 	TraceLevel  string `json:"trace_level,omitempty"`
 }
 
-func request(socketPath string, req protocolRequest, startIfNeeded bool) (response, error) {
+// streamFrame is one wire frame in a streaming eval reply. Non-final frames
+// carry a chunk; the final frame has Done=true and optional Error.
+type streamFrame struct {
+	Chunk string `json:"chunk,omitempty"`
+	Done  bool   `json:"done,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// run dials the daemon, sends req, and writes the result to stdout/stderr.
+// For eval the daemon replies with NDJSON streaming frames; chunks are
+// written to stdout as they arrive. Other actions reply with a single frame.
+func run(socketPath string, req protocolRequest, startIfNeeded bool) {
 	conn, err := connect(socketPath, startIfNeeded)
 	if err != nil {
-		return response{}, err
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	defer conn.Close()
-
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return response{}, err
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	if req.Action == "eval" {
+		dec := json.NewDecoder(conn)
+		for {
+			var f streamFrame
+			if err := dec.Decode(&f); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if f.Done {
+				if f.Error != "" {
+					fmt.Fprintln(os.Stderr, f.Error)
+					os.Exit(1)
+				}
+				return
+			}
+			fmt.Print(f.Chunk)
+		}
 	}
 
 	var resp response
@@ -80,15 +111,11 @@ func request(socketPath string, req protocolRequest, startIfNeeded bool) (respon
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
 	if scanner.Scan() {
 		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-			return response{}, err
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 	}
-	return resp, scanner.Err()
-}
-
-func run(socketPath string, req protocolRequest, startIfNeeded bool) {
-	resp, err := request(socketPath, req, startIfNeeded)
-	if err != nil {
+	if err := scanner.Err(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
