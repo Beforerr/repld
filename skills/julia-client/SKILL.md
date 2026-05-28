@@ -11,7 +11,9 @@ Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 
 - Import packages once per session; later calls should use already-loaded names.
 - Avoid repeating fixture/setup code in every command.
 - Session routing: `--session LABEL` > `--project PROJECT`; default to `--project=@.` when omit both.
-- Avoid `--fresh` unless changing struct/type definitions or requiring clean state.
+- Use `--fresh` only when Revise can't track changes. Some cases include:
+  - struct/type redefinition
+  - adding `using NewPkg` inside modules whose `Project.toml` didn't already list `NewPkg` dep (the module's load-time dep view is cached so `Pkg.add`+edit isn't enough)
 
 ## Other Examples
 
@@ -20,11 +22,9 @@ julia-client --project=test -e 'using ImportPackageOnce' # Different --project =
 julia-client --project=@temp -e 'using Pkg; Pkg.add("Example")' # Temporary throwaway environment
 julia-client --session scratch -e 'error("test error")' # separate named session
 
-# Long-running tasks (first plot, heavy compute): set longer timeout or disable timeout (0)
-julia-client --timeout 300 heavy_script.jl
-
 julia-client trace --session scratch # show the last saved Julia traceback without rerunning
 
 julia-client sessions   # list active sessions
+julia-client interrupt --session scratch  # SIGINT a stuck call; session state preserved if it responds within 3s
 julia-client stop       # shut down the daemon
 ```

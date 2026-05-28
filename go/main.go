@@ -53,16 +53,15 @@ type response struct {
 }
 
 type protocolRequest struct {
-	Action      string   `json:"action"`
-	Code        string   `json:"code,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	Project     string   `json:"project,omitempty"`
-	Session     string   `json:"session,omitempty"`
-	Timeout     *float64 `json:"timeout,omitempty"`
-	JuliaCmd    string   `json:"julia_cmd,omitempty"`
-	PrintResult bool     `json:"print_result,omitempty"`
-	Fresh       bool     `json:"fresh,omitempty"`
-	TraceLevel  string   `json:"trace_level,omitempty"`
+	Action      string `json:"action"`
+	Code        string `json:"code,omitempty"`
+	Cwd         string `json:"cwd,omitempty"`
+	Project     string `json:"project,omitempty"`
+	Session     string `json:"session,omitempty"`
+	JuliaCmd    string `json:"julia_cmd,omitempty"`
+	PrintResult bool   `json:"print_result,omitempty"`
+	Fresh       bool   `json:"fresh,omitempty"`
+	TraceLevel  string `json:"trace_level,omitempty"`
 }
 
 func request(socketPath string, req protocolRequest, startIfNeeded bool) (response, error) {
@@ -119,7 +118,7 @@ func normalizeProjectArg(project string) string {
 	return projectArg
 }
 
-func cmdEval(socketPath, code, project, session string, timeout float64, juliaCmd string, printResult, fresh bool, traceLevel string) {
+func cmdEval(socketPath, code, project, session, juliaCmd string, printResult, fresh bool, traceLevel string) {
 	if code == "-" {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -129,20 +128,26 @@ func cmdEval(socketPath, code, project, session string, timeout float64, juliaCm
 		code = string(b)
 	}
 	req := protocolRequest{
-		Action:     "eval",
-		Code:       code,
-		Cwd:        mustGetwd(),
-		Project:    normalizeProjectArg(project),
-		Session:    session,
-		TraceLevel: traceLevel,
+		Action:      "eval",
+		Code:        code,
+		Cwd:         mustGetwd(),
+		Project:     normalizeProjectArg(project),
+		Session:     session,
+		TraceLevel:  traceLevel,
+		JuliaCmd:    juliaCmd,
+		PrintResult: printResult,
+		Fresh:       fresh,
 	}
-	if timeout != -1 {
-		req.Timeout = &timeout
-	}
-	req.JuliaCmd = juliaCmd
-	req.PrintResult = printResult
-	req.Fresh = fresh
 	run(socketPath, req, true)
+}
+
+func cmdInterrupt(socketPath, project, session string) {
+	run(socketPath, protocolRequest{
+		Action:  "interrupt",
+		Cwd:     mustGetwd(),
+		Project: normalizeProjectArg(project),
+		Session: session,
+	}, false)
 }
 
 func cmdTrace(socketPath, project, session, traceLevel string) {
@@ -181,7 +186,6 @@ Eval flags:
   --project PROJECT    Julia project directory or selector (passed as --project to Julia)
   --session LABEL      Named session to create or reuse across directories
   --fresh              Clear the targeted session before evaluating
-  --timeout SECS       Timeout in seconds (0 = no timeout, default: 100)
   --julia-cmd CMD      Custom Julia binary, e.g. "julia +1.11"
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)
 
@@ -193,6 +197,7 @@ Session routing (priority order):
 Commands:
   sessions             List active Julia sessions
   trace                Print the last saved Julia error traceback for this session
+  interrupt            Send SIGINT (then SIGKILL after 3s) to the targeted session
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
     --idle-timeout SECS  Shut down after idle (default: 3600)
@@ -212,7 +217,6 @@ func main() {
 	projectFlag := flag.String("project", "@.", "Julia project directory")
 	sessionFlag := flag.String("session", "", "Named session label")
 	freshFlag := flag.Bool("fresh", false, "Clear the targeted session before evaluating")
-	timeoutFlag := flag.Float64("timeout", -1, "Timeout in seconds")
 	juliaCmdFlag := flag.String("julia-cmd", "", "Custom Julia binary")
 	traceFlag := flag.String("trace", "", "Error traceback level: short, smart, or full")
 	flag.Usage = usage
@@ -220,14 +224,14 @@ func main() {
 
 	// -E / --print: evaluate and display result
 	if code := first(*printShort, *printLong); code != "" {
-		cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, true, *freshFlag, *traceFlag)
+		cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *juliaCmdFlag, true, *freshFlag, *traceFlag)
 		return
 	}
 
 	// -e / --eval: evaluate mode
 	code := first(*evalShort, *evalLong)
 	if code != "" {
-		cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
+		cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
 		return
 	}
 
@@ -239,7 +243,7 @@ func main() {
 		if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
 			usage()
 		}
-		cmdEval(*socketFlag, "-", *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
+		cmdEval(*socketFlag, "-", *projectFlag, *sessionFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
 		return
 	}
 
@@ -254,6 +258,13 @@ func main() {
 		traceSession := fs.String("session", *sessionFlag, "Named session label")
 		fs.Parse(args[1:])
 		cmdTrace(*socketFlag, *traceProject, *traceSession, *traceLevel)
+
+	case "interrupt":
+		fs := flag.NewFlagSet("interrupt", flag.ExitOnError)
+		intProject := fs.String("project", *projectFlag, "Julia project directory")
+		intSession := fs.String("session", *sessionFlag, "Named session label")
+		fs.Parse(args[1:])
+		cmdInterrupt(*socketFlag, *intProject, *intSession)
 
 	case "stop":
 		run(*socketFlag, protocolRequest{Action: "stop"}, false)
@@ -270,7 +281,7 @@ func main() {
 	default:
 		if _, err := os.Stat(args[0]); err == nil {
 			code := fmt.Sprintf("cd(%q) do; Base.include(Main, %q); end", mustGetwd(), args[0])
-			cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *timeoutFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
+			cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
 			return
 		}
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])

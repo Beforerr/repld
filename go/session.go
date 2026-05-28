@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -21,10 +22,7 @@ import (
 //go:embed julia_client_runtime.jl
 var juliaClientRuntime string
 
-const (
-	defaultEvalTimeout = 100.0
-	startupTimeout     = 120.0
-)
+const startupTimeout = 120.0
 
 // JuliaSession manages a single persistent Julia subprocess.
 type JuliaSession struct {
@@ -37,8 +35,9 @@ type JuliaSession struct {
 	stdout *bufio.Reader
 	mu     sync.Mutex
 
-	dead    atomic.Bool
-	logFile *os.File
+	dead       atomic.Bool
+	busySince  atomic.Int64 // UnixNano of current call start; 0 when idle
+	logFile    *os.File
 }
 
 func newSentinel() string {
@@ -251,7 +250,7 @@ func (s *JuliaSession) executeRaw(code string, timeoutSecs float64) (string, err
 	}
 }
 
-func (s *JuliaSession) execute(code string, timeoutSecs float64, printResult bool) (string, error) {
+func (s *JuliaSession) execute(code string, printResult bool) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -268,7 +267,10 @@ func (s *JuliaSession) execute(code string, timeoutSecs float64, printResult boo
 		fmt.Fprintf(s.logFile, "[%s] julia> %s\n", time.Now().Format("15:04:05"), code)
 	}
 
-	output, err := s.executeRaw(wrapped, timeoutSecs)
+	s.busySince.Store(time.Now().UnixNano())
+	defer s.busySince.Store(0)
+
+	output, err := s.executeRaw(wrapped, 0)
 	if err != nil {
 		return "", err
 	}
@@ -293,6 +295,44 @@ func (s *JuliaSession) kill() {
 	}
 	if s.logFile != nil {
 		s.logFile.Close()
+	}
+}
+
+// interrupt sends SIGINT to the Julia subprocess. If the in-flight call
+// (if any) doesn't return within graceSecs, escalates to SIGKILL.
+// Returns survived=true only if the call ended and the process is still
+// alive. Julia's SIGINT handling is best-effort: it sometimes crashes the
+// process even when the interrupt is "successful" from our side.
+func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
+	if !s.isAlive() {
+		return false, fmt.Errorf("session is not alive")
+	}
+	if s.proc == nil || s.proc.Process == nil {
+		return false, fmt.Errorf("session has no process")
+	}
+	if s.busySince.Load() == 0 {
+		// Nothing to interrupt; treat as no-op success.
+		return true, nil
+	}
+	if err := s.proc.Process.Signal(syscall.SIGINT); err != nil {
+		return false, err
+	}
+	deadline := time.After(time.Duration(float64(time.Second) * graceSecs))
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		select {
+		case <-deadline:
+			s.proc.Process.Kill()
+			s.proc.Wait()
+			s.dead.Store(true)
+			return false, nil
+		case <-poll.C:
+			if s.busySince.Load() == 0 {
+				// Call returned; survived iff process didn't crash on the interrupt.
+				return s.isAlive(), nil
+			}
+		}
 	}
 }
 
@@ -424,11 +464,13 @@ type sessionInfo struct {
 	alive    bool
 	juliaCmd string
 	logFile  string
+	busyFor  time.Duration // 0 when idle
 }
 
 func (m *SessionManager) list() []sessionInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now()
 	result := make([]sessionInfo, 0, len(m.sessions))
 	for key, sess := range m.sessions {
 		info := sessionInfo{
@@ -437,12 +479,36 @@ func (m *SessionManager) list() []sessionInfo {
 			alive:    sess.isAlive(),
 			juliaCmd: sess.juliaCmd,
 		}
+		if since := sess.busySince.Load(); since != 0 {
+			info.busyFor = now.Sub(time.Unix(0, since))
+		}
 		if sess.logFile != nil {
 			info.logFile = sess.logFile.Name()
 		}
 		result = append(result, info)
 	}
 	return result
+}
+
+func (m *SessionManager) interrupt(session, project, cwd string, graceSecs float64) (string, error) {
+	key := m.key(session, project, cwd)
+	m.mu.Lock()
+	sess := m.sessions[key]
+	m.mu.Unlock()
+	if sess == nil {
+		return "", fmt.Errorf("no session for %s", key)
+	}
+	survived, err := sess.interrupt(graceSecs)
+	if err != nil {
+		return "", err
+	}
+	if !survived {
+		m.mu.Lock()
+		delete(m.sessions, key)
+		m.mu.Unlock()
+		return fmt.Sprintf("Session %s did not survive interrupt; killed.", key), nil
+	}
+	return fmt.Sprintf("Session %s interrupted.", key), nil
 }
 
 func (m *SessionManager) shutdown() {
