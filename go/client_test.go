@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,27 +22,6 @@ func TestMain(m *testing.M) {
 		return
 	}
 	os.Exit(m.Run())
-}
-
-// ---- pkgPattern ----
-
-func TestPkgPattern(t *testing.T) {
-	hits := []string{
-		"Pkg.add(\"Example\")",
-		"using Pkg; Pkg.update()",
-		"Pkg.resolve()",
-	}
-	misses := []string{
-		"println(\"hello\")",
-		"x = 1 + 2",
-		"# no package ops here",
-	}
-	for _, s := range hits {
-		require.Truef(t, pkgPattern.MatchString(s), "pkgPattern should match %q", s)
-	}
-	for _, s := range misses {
-		require.Falsef(t, pkgPattern.MatchString(s), "pkgPattern should not match %q", s)
-	}
 }
 
 // ---- handleRequest (no Julia needed) ----
@@ -360,6 +340,71 @@ func TestEvalTestFailureKeepsNativeNoiseLevel(t *testing.T) {
 	require.Equal(t, "ERROR: There was an error during testing", resp.Error)
 	require.NotContains(t, resp.Error, "Stacktrace:")
 	require.NotContains(t, resp.Error, "FallbackTestSetException")
+}
+
+func TestInterruptUnknownSession(t *testing.T) {
+	state := newTestState()
+	resp := handleRequest(state, protocolRequest{
+		Action:  "interrupt",
+		Session: "nope",
+		Cwd:     "/tmp",
+	})
+	require.NotEmpty(t, resp.Error)
+	require.Contains(t, resp.Error, "no session")
+}
+
+// TestInterruptBusyAndUnblocks covers: (1) sessions listing reports busy=
+// while a call is in flight, (2) interrupt unblocks the in-flight call.
+// State preservation is best-effort — Julia 1.12 SIGINT during sleep often
+// crashes the subprocess, so we don't assert globals survive.
+func TestInterruptBusyAndUnblocks(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	send := func(req protocolRequest) response {
+		if req.Cwd == "" {
+			req.Cwd = cwd
+		}
+		return sendRequest(t, socketPath, req)
+	}
+
+	// Prime the session so subsequent calls don't pay startup cost.
+	resp := send(protocolRequest{Action: "eval", Session: "irq", Code: "1+1"})
+	require.Empty(t, resp.Error)
+
+	// Kick off a long sleep in a goroutine.
+	done := make(chan response, 1)
+	go func() {
+		done <- send(protocolRequest{Action: "eval", Session: "irq", Code: "sleep(60)"})
+	}()
+
+	// Wait until the session reports busy.
+	deadline := time.Now().Add(5 * time.Second)
+	var sessResp response
+	for time.Now().Before(deadline) {
+		sessResp = send(protocolRequest{Action: "sessions"})
+		if strings.Contains(sessResp.Output, "busy=") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.Contains(t, sessResp.Output, "busy=", "sessions listing should show busy= while a call is in flight")
+
+	// Interrupt — accept either "interrupted" (survived) or "killed" (crashed).
+	irq := send(protocolRequest{Action: "interrupt", Session: "irq"})
+	require.Empty(t, irq.Error)
+	require.True(t,
+		strings.Contains(irq.Output, "interrupted") || strings.Contains(irq.Output, "killed"),
+		"interrupt should report a terminal outcome, got: %q", irq.Output)
+
+	// The in-flight goroutine must return promptly.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "interrupted call did not return")
+	}
 }
 
 func TestRevisePicksUpPackageChanges(t *testing.T) {

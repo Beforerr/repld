@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,8 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-var pkgPattern = regexp.MustCompile(`\bPkg\.`)
 
 type daemonState struct {
 	manager     *SessionManager
@@ -30,18 +27,6 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 
 	switch req.Action {
 	case "eval":
-		var timeoutSecs float64
-		if req.Timeout != nil {
-			if *req.Timeout > 0 {
-				timeoutSecs = *req.Timeout
-			}
-			// v <= 0 means no timeout; timeoutSecs stays 0
-		} else if pkgPattern.MatchString(req.Code) {
-			timeoutSecs = 0 // Pkg operations: no timeout
-		} else {
-			timeoutSecs = defaultEvalTimeout
-		}
-
 		if req.Fresh {
 			state.manager.restart(req.Session, req.Project, req.Cwd)
 		}
@@ -49,7 +34,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		if err != nil {
 			return errResp(err.Error())
 		}
-		output, err := sess.execute(req.Code, timeoutSecs, req.PrintResult)
+		output, err := sess.execute(req.Code, req.PrintResult)
 		if err != nil {
 			if !sess.isAlive() {
 				state.manager.remove(req.Session, req.Project, req.Cwd)
@@ -94,6 +79,8 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 			}
 			if !s.alive {
 				line += " status=dead"
+			} else if s.busyFor > 0 {
+				line += fmt.Sprintf(" busy=%.1fs", s.busyFor.Seconds())
 			}
 			if s.juliaCmd != "" {
 				line += " julia_cmd=" + s.juliaCmd
@@ -104,6 +91,13 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 			lines = append(lines, line)
 		}
 		return response{Output: strings.Join(lines, "\n")}
+
+	case "interrupt":
+		msg, err := state.manager.interrupt(req.Session, req.Project, req.Cwd, 3.0)
+		if err != nil {
+			return errResp(err.Error())
+		}
+		return response{Output: msg}
 
 	case "stop":
 		state.stopOnce.Do(func() { close(state.stopCh) })
