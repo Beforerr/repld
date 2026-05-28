@@ -170,7 +170,6 @@ end
 
 function _write_error(start_marker, end_marker, short, smart, full)
     flush(stderr)
-    write(stdout, "\n")
     println(stdout, start_marker)
     println(stdout, bytes2hex(Vector{UInt8}(codeunits(short))))
     println(stdout, bytes2hex(Vector{UInt8}(codeunits(smart))))

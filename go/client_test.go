@@ -157,6 +157,19 @@ func sendRequest(t *testing.T, socketPath string, req protocolRequest) response 
 	require.NoError(t, err)
 	defer conn.Close()
 	require.NoError(t, json.NewEncoder(conn).Encode(req))
+	if req.Action == "eval" {
+		// Eval always streams: collect frames into a single response.
+		dec := json.NewDecoder(conn)
+		var buf strings.Builder
+		for {
+			var f streamFrame
+			require.NoError(t, dec.Decode(&f))
+			if f.Done {
+				return response{Output: buf.String(), Error: f.Error}
+			}
+			buf.WriteString(f.Chunk)
+		}
+	}
 	var resp response
 	require.NoError(t, json.NewDecoder(conn).Decode(&resp))
 	return resp
@@ -340,6 +353,116 @@ func TestEvalTestFailureKeepsNativeNoiseLevel(t *testing.T) {
 	require.Equal(t, "ERROR: There was an error during testing", resp.Error)
 	require.NotContains(t, resp.Error, "Stacktrace:")
 	require.NotContains(t, resp.Error, "FallbackTestSetException")
+}
+
+// streamRequest sends a request expecting NDJSON streaming frames. It returns
+// the chunks (each with arrival timestamp) and the terminal frame.
+func streamRequest(t *testing.T, socketPath string, req protocolRequest) (chunks []streamChunk, final streamFrame) {
+	t.Helper()
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, json.NewEncoder(conn).Encode(req))
+	dec := json.NewDecoder(conn)
+	for {
+		var f streamFrame
+		if err := dec.Decode(&f); err != nil {
+			require.Fail(t, "decode failed before done frame", err.Error())
+		}
+		if f.Done {
+			final = f
+			return
+		}
+		chunks = append(chunks, streamChunk{data: f.Chunk, stderr: f.Stderr, at: time.Now()})
+	}
+}
+
+type streamChunk struct {
+	data   string
+	stderr string
+	at     time.Time
+}
+
+func TestStreamingEvalDeliversChunksIncrementally(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	// Prime the session so we don't measure startup cost.
+	sendRequest(t, socketPath, protocolRequest{Action: "eval", Code: "1+1", Cwd: cwd})
+
+	code := `println("a"); flush(stdout); sleep(0.3); println("b"); flush(stdout); sleep(0.3); println("c"); flush(stdout)`
+	chunks, final := streamRequest(t, socketPath, protocolRequest{
+		Action: "eval", Code: code, Cwd: cwd,
+	})
+	require.True(t, final.Done)
+	require.Empty(t, final.Error)
+
+	var combined string
+	for _, c := range chunks {
+		combined += c.data
+	}
+	require.Contains(t, combined, "a")
+	require.Contains(t, combined, "b")
+	require.Contains(t, combined, "c")
+
+	// The chunk(s) carrying "b" must arrive measurably after the chunk(s) with "a".
+	var aTime, bTime time.Time
+	for _, c := range chunks {
+		if aTime.IsZero() && strings.Contains(c.data, "a") {
+			aTime = c.at
+		}
+		if bTime.IsZero() && strings.Contains(c.data, "b") {
+			bTime = c.at
+		}
+	}
+	require.Falsef(t, aTime.IsZero(), "no chunk contained 'a'; chunks=%v", chunks)
+	require.Falsef(t, bTime.IsZero(), "no chunk contained 'b'; chunks=%v", chunks)
+	require.Greaterf(t, bTime.Sub(aTime), 150*time.Millisecond,
+		"'b' should arrive measurably after 'a' (actual gap %v)", bTime.Sub(aTime))
+}
+
+func TestStreamingSeparatesStdoutFromStderr(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	sendRequest(t, socketPath, protocolRequest{Action: "eval", Code: "1+1", Cwd: cwd})
+
+	chunks, final := streamRequest(t, socketPath, protocolRequest{
+		Action: "eval",
+		Code:   `println(stdout, "OUT_LINE"); flush(stdout); println(stderr, "ERR_LINE"); flush(stderr)`,
+		Cwd:    cwd,
+	})
+	require.True(t, final.Done)
+	require.Empty(t, final.Error)
+
+	var stdoutBuf, stderrBuf strings.Builder
+	for _, c := range chunks {
+		stdoutBuf.WriteString(c.data)
+		stderrBuf.WriteString(c.stderr)
+	}
+	require.Contains(t, stdoutBuf.String(), "OUT_LINE")
+	require.NotContains(t, stdoutBuf.String(), "ERR_LINE", "stderr output must not leak into stdout chunks")
+	require.Contains(t, stderrBuf.String(), "ERR_LINE")
+	require.NotContains(t, stderrBuf.String(), "OUT_LINE", "stdout output must not leak into stderr chunks")
+}
+
+func TestStreamingEvalSurfacesError(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	sendRequest(t, socketPath, protocolRequest{Action: "eval", Code: "1+1", Cwd: cwd})
+
+	_, final := streamRequest(t, socketPath, protocolRequest{
+		Action: "eval", Code: `error("boom")`, Cwd: cwd,
+	})
+	require.True(t, final.Done)
+	require.Contains(t, final.Error, "boom")
 }
 
 func TestInterruptUnknownSession(t *testing.T) {
