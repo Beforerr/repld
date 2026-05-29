@@ -18,7 +18,6 @@ Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 
 ## Environment
 
 - `JULIA_EXE` — Path to the Julia binary. If unset, `julia` is looked up in `$PATH`.
-  Example: `JULIA_EXE=/opt/julia/bin/julia julia-client -e 'using MyPackage'`
 
 ## Other Examples
 

@@ -25,7 +25,6 @@ const startupTimeout = 120.0
 // JuliaSession manages a single persistent Julia subprocess.
 type JuliaSession struct {
 	projectVal string // pre-computed --project= arg (also used for display)
-	juliaExe   string // custom Julia binary path (empty = use LookPath)
 	sentinel   string
 	juliaArgs  []string // switches forwarded to the julia subprocess
 
@@ -48,24 +47,23 @@ func newSentinel() string {
 	return fmt.Sprintf("__JULIA_CLIENT_%s__", hex.EncodeToString(b))
 }
 
-func newJuliaSession(projectVal, sentinel string, juliaArgs []string, juliaExe string, logFile *os.File) *JuliaSession {
+func newJuliaSession(projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
 	return &JuliaSession{
 		projectVal: projectVal,
 		sentinel:   sentinel,
 		juliaArgs:  juliaArgs,
-		juliaExe:   juliaExe,
 		logFile:    logFile,
 	}
 }
 
-func (s *JuliaSession) start(workDir string) error {
+func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	var exe string
-	if s.juliaExe != "" {
-		if filepath.IsAbs(s.juliaExe) {
-			exe = s.juliaExe
+	if juliaExe != "" {
+		if filepath.IsAbs(juliaExe) {
+			exe = juliaExe
 		} else {
 			// Relative path: resolved relative to the project directory
-			exe = filepath.Join(s.projectVal, s.juliaExe)
+			exe = filepath.Join(s.projectVal, juliaExe)
 		}
 	} else {
 		var err error

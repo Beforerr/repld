@@ -86,8 +86,8 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, jul
 		if projectVal == "" {
 			projectVal = "@."
 		}
-		sess = newJuliaSession(projectVal, newSentinel(), juliaArgs, juliaExe, m.openLogFile(key))
-		if err := sess.start(cwd); err != nil {
+		sess = newJuliaSession(projectVal, newSentinel(), juliaArgs, m.openLogFile(key))
+		if err := sess.start(juliaExe, cwd); err != nil {
 			return nil, err
 		}
 
