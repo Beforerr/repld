@@ -418,16 +418,27 @@ func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 		// Nothing to interrupt; treat as no-op success.
 		return true, nil
 	}
-	if s.interruptW != nil {
-		if _, werr := s.interruptW.Write([]byte{'\n'}); werr != nil {
-			return false, werr
+	// A single interrupt can be silently lost: scheduling the InterruptException
+	// onto the eval task races with the wakeup of whatever it's blocked on (e.g.
+	// the timer behind `sleep`), and the exception sometimes never lands. So we
+	// resend on a slow cadence until the call returns. The runtime clears its
+	// target task once the eval ends, so any late byte is a no-op; the cadence is
+	// well below the listener's drain rate, so no backlog leaks into a next eval.
+	signal := func() error {
+		if s.interruptW != nil {
+			_, werr := s.interruptW.Write([]byte{'\n'})
+			return werr
 		}
-	} else if err := s.proc.Process.Signal(syscall.SIGINT); err != nil {
+		return s.proc.Process.Signal(syscall.SIGINT)
+	}
+	if err := signal(); err != nil {
 		return false, err
 	}
 	deadline := time.After(time.Duration(float64(time.Second) * graceSecs))
 	poll := time.NewTicker(50 * time.Millisecond)
 	defer poll.Stop()
+	resend := time.NewTicker(250 * time.Millisecond)
+	defer resend.Stop()
 	for {
 		select {
 		case <-deadline:
@@ -435,6 +446,10 @@ func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 			s.proc.Wait()
 			s.dead.Store(true)
 			return false, nil
+		case <-resend.C:
+			if s.busySince.Load() != 0 {
+				_ = signal() // a prior interrupt may have been lost to the race
+			}
 		case <-poll.C:
 			if s.busySince.Load() == 0 {
 				// Call returned; survived iff process didn't crash on the interrupt.
