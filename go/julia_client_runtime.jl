@@ -172,11 +172,10 @@ function _render_error(err, bt)
     return short, smart, full
 end
 
-# Control channel: the Go client listens on a loopback port and passes its
-# address; we dial back and authenticate with the shared token. One framed
-# status line per eval flows out over this socket (user output stays on
-# stdout/stderr untouched), and interrupt bytes flow back in (see below). A
-# socket rather than an inherited fd is what lets this work on Windows.
+# Control channel: dial back to the loopback address the Go client passed and
+# authenticate with the shared token. One framed status line per eval flows out
+# (OK/ERR); interrupt bytes flow back in. A socket rather than an inherited fd
+# is what makes this work on Windows.
 const _CONTROL = try
     host, port = rsplit(ENV["JULIA_CLIENT_CONTROL_ADDR"], ":"; limit=2)
     sock = Sockets.connect(host, parse(Int, port))

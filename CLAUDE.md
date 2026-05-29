@@ -14,12 +14,12 @@ Three channels:
 
 - **stdout / stderr** — separate OS pipes Go owns directly; user output only, streamed as NDJSON `chunk`/`stderr` frames. Captures C-level/subprocess writes too — do not redirect inside Julia.
 - **Sentinel** — `println(sentinel)` to both streams after each eval; pure drain barrier, no data.
-- **Control (fd 3)** — pipe via `cmd.ExtraFiles`; runtime writes one frame per eval: `OK` or `ERR <hex short> <hex smart> <hex full>`. Source of truth for errors; stdout is never parsed for them.
+- **Control** — a loopback TCP socket. Go listens on `127.0.0.1:0` and passes the address + a one-time token via env (`JULIA_CLIENT_CONTROL_ADDR`/`_TOKEN`); the runtime dials back and authenticates. Bidirectional over one conn: runtime writes one frame per eval (`OK` or `ERR <hex short> <hex smart> <hex full>`, the source of truth for errors — stdout is never parsed for them); Go writes a byte the other way to interrupt. A socket, not inherited fds, because `cmd.ExtraFiles` is unsupported on Windows.
 
 Invariants:
-- Drain the control frame **concurrently** (own goroutine), never after the sentinel — large frames exceed the pipe buffer and would deadlock.
-- Missing/garbled frame, or no fd 3 (Windows) → degrade to no error, not hang. `executeRaw` reads it only when `expectControl` is set; EOF yields `nil`.
-- Startup calls pass `expectControl=false` (no `run()`, no frame).
+- Drain the control frame **concurrently** (own goroutine), never after the sentinel — a large frame can fill the socket buffer and deadlock otherwise.
+- No connection (token mismatch / dial failed) → degrade to no error/no interrupt, not hang. `executeRaw` reads the frame only when `expectControl` is set; EOF yields `nil`.
+- `start()` blocks until the control conn is accepted (or times out) before the first eval; startup calls pass `expectControl=false` (no `run()`, no frame).
 
 ## Key files
 
@@ -27,4 +27,4 @@ Invariants:
 - `go/daemon.go` - Request dispatch, inactivity timer, client-disconnect→interrupt watcher
 - `go/session.go` - `JuliaSession`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt
 - `go/manager.go` - `SessionManager`: session map, routing/keying, per-session logs
-- `go/julia_client_runtime.jl` - in-Julia runtime: `run()` evals code and writes the fd-3 control frame; error/traceback rendering
+- `go/julia_client_runtime.jl` - in-Julia runtime: dials the control socket, `run()` evals code and writes the control frame, listens for interrupt bytes; error/traceback rendering

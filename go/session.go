@@ -120,14 +120,11 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	cmd.Stdout = outW
 	cmd.Stderr = errW
 
-	// Control channel: user output stays on the real stdout/stderr pipes (so we
-	// capture everything, including C-level/subprocess writes), while the
-	// runtime reports structured eval status/errors out-of-band. The runtime
-	// dials back on this loopback socket and we multiplex both directions over
-	// it: framed status (child→parent) and interrupt bytes (parent→child). A
-	// socket rather than inherited fds keeps this working on Windows, where
-	// exec.Cmd.ExtraFiles is unsupported. The token rejects any other local
-	// process that races to connect to the ephemeral port first.
+	// Control channel: a loopback socket the runtime dials back on, carrying
+	// framed eval status (child→parent) and interrupt bytes (parent→child) out
+	// of band from user stdout/stderr. A socket rather than inherited fds
+	// because exec.Cmd.ExtraFiles is unsupported on Windows; the token rejects
+	// any other local process that races to the ephemeral port first.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		closeAll()
@@ -153,8 +150,7 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	s.stderr = bufio.NewReaderSize(errR, 64*1024*1024)
 
 	// The child only dials back once it loads the runtime (below), so accept
-	// concurrently. Missing/failed connection degrades to no control channel,
-	// mirroring the old "no fd 3" path rather than hanging.
+	// concurrently; a failed connection degrades to no control channel.
 	controlReady := make(chan struct{})
 	go func() {
 		defer close(controlReady)
