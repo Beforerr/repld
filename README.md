@@ -2,7 +2,7 @@
 
 Persistent Julia REPL client and daemon.
 
-Runs Julia code in a long-lived session over a Unix socket so that state (variables, loaded packages) survives between calls. The project environment is auto-detected from `$PWD`.
+Runs Julia code in long-lived sessions over a Unix socket so that state (variables, loaded packages) survives between calls. The project is auto-detected from `$PWD` by default; see [Sessions](#sessions) for routing.
 
 ## Quickstart
 
@@ -31,10 +31,10 @@ Or manually by adding this repo's `skills/` directory to your Agent skill search
 # Evaluate code (daemon starts automatically)
 julia-client -e 'println("hello")'
 
-# Explicit project environment
+# Explicit project: each distinct --project is its own session
 julia-client --project /path/to/project -e 'using MyPackage'
 julia-client --project @temp -e 'using Pkg; Pkg.add("Example")'
-julia-client --project @shareAnyname -e 'using Example'
+julia-client --project @myenv -e 'using Example'
 
 # Read from stdin
 echo 'println("hello")' | julia-client
@@ -54,6 +54,16 @@ Traceback levels:
 - `short`: exception message only.
 - `smart`: default eval output; user/project frames plus nearby boundary frames, hiding Julia/client internals.
 - `full`: Julia's full traceback, including runtime and REPL frames.
+
+## Sessions
+
+Each call is routed to a persistent Julia process by a key, in priority order:
+
+1. `--session LABEL` — explicit label, shared across directories and projects.
+2. `--project PROJECT` (not `@.`) — the selector (`@temp`, `@myenv`) or absolute path.
+3. default (`@.` or omitted) — the current directory; Julia uses the nearest `Project.toml` up from `$PWD`.
+
+A session's project is fixed at launch: a different `--project` routes to (and starts) a *different* session, not a reactivation. Same key reuses the same process, so its state persists; different keys are isolated. `--fresh` restarts the targeted session.
 
 ## Architecture
 
