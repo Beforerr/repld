@@ -705,6 +705,10 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	require.Equal(t, "hello\n", resp.Output)
 
 	writePackage(`"goodbye"`)
-	resp = send("println(TestRevPkg.greet())")
-	require.Equal(t, "goodbye\n", resp.Output)
+	// Revise sees the rewrite asynchronously (FSEvents/mtime latency), so the
+	// reload is eventually-consistent; each eval runs Revise.revise() first, so
+	// retry until the new definition lands.
+	require.Eventually(t, func() bool {
+		return send("println(TestRevPkg.greet())").Output == "goodbye\n"
+	}, 15*time.Second, 250*time.Millisecond, "Revise did not pick up the package change")
 }
