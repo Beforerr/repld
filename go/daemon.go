@@ -199,7 +199,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 			emit(streamFrame{Chunk: data})
 		}
 	}
-	_, err = sess.execute(req.Code, req.PrintResult, onChunk)
+	err = sess.execute(req.Code, req.PrintResult, onChunk)
 	close(evalDone)
 	if err != nil {
 		if !sess.isAlive() {

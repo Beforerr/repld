@@ -168,16 +168,23 @@ function _render_error(err, bt)
     return short, smart, full
 end
 
-function _write_error(start_marker, end_marker, short, smart, full)
-    flush(stderr)
-    println(stdout, start_marker)
-    println(stdout, bytes2hex(Vector{UInt8}(codeunits(short))))
-    println(stdout, bytes2hex(Vector{UInt8}(codeunits(smart))))
-    println(stdout, bytes2hex(Vector{UInt8}(codeunits(full))))
-    println(stdout, end_marker)
+# Control channel (fd 3): the Go client passes a pipe as fd 3 and reads one
+# framed status line per eval. User output stays on stdout/stderr untouched.
+const _CONTROL = try
+    fdio(3, true)
+catch
+    nothing
 end
 
-function run(hex_code, print_result, start_marker, end_marker)
+function _write_control(line)
+    _CONTROL === nothing && return
+    println(_CONTROL, line)
+    flush(_CONTROL)
+end
+
+_hex(s) = bytes2hex(Vector{UInt8}(codeunits(s)))
+
+function run(hex_code, print_result)
     code = String(hex2bytes(hex_code))
     try
         try
@@ -189,9 +196,12 @@ function run(hex_code, print_result, start_marker, end_marker)
             show(IOContext(stdout, :limit => true), MIME("text/plain"), value)
             println(stdout)
         end
+        flush(stdout)
+        _write_control("OK")
     catch err
         short, smart, full = _render_error(err, catch_backtrace())
-        _write_error(start_marker, end_marker, short, smart, full)
+        flush(stdout)
+        _write_control(string("ERR ", _hex(short), " ", _hex(smart), " ", _hex(full)))
     end
     return nothing
 end
