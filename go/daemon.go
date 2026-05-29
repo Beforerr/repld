@@ -171,6 +171,27 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return
 	}
+
+	// Watch for client disconnect. If the client goes away mid-eval (e.g.
+	// `timeout 30 julia-client` kills it), interrupt the session so the
+	// computation stops instead of orphaning and holding the session lock.
+	// The client never writes after its request, so a Read here blocks until
+	// the connection closes.
+	evalDone := make(chan struct{})
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			if _, rerr := conn.Read(buf); rerr != nil {
+				select {
+				case <-evalDone: // eval already finished; normal close
+				default:
+					sess.interrupt(3.0)
+				}
+				return
+			}
+		}
+	}()
+
 	onChunk := func(data string, isStderr bool) {
 		if isStderr {
 			emit(streamFrame{Stderr: data})
@@ -179,6 +200,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		}
 	}
 	_, err = sess.execute(req.Code, req.PrintResult, onChunk)
+	close(evalDone)
 	if err != nil {
 		if !sess.isAlive() {
 			state.manager.remove(req.Session, req.Project, req.Cwd)

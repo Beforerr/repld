@@ -530,6 +530,59 @@ func TestInterruptBusyAndUnblocks(t *testing.T) {
 	}
 }
 
+// TestClientDisconnectInterruptsEval covers the `timeout 30 julia-client`
+// scenario: when the client is killed mid-eval, the daemon must interrupt the
+// in-flight computation rather than let it orphan and hold the session lock.
+func TestClientDisconnectInterruptsEval(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	// Prime the session so the long eval isn't waiting on Julia startup.
+	resp := sendRequest(t, socketPath, protocolRequest{Action: "eval", Session: "disc", Code: "1+1", Cwd: cwd})
+	require.Empty(t, resp.Error)
+
+	// Start a long eval on its own connection.
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	require.NoError(t, json.NewEncoder(conn).Encode(protocolRequest{
+		Action: "eval", Session: "disc", Code: "sleep(60)", Cwd: cwd,
+	}))
+
+	// Wait until the session reports busy.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Drop the connection abruptly, as `timeout` killing the client would.
+	require.NoError(t, conn.Close())
+
+	// The session must stop being busy promptly. Without disconnect handling,
+	// the orphaned sleep(60) would keep the session busy for ~60s.
+	require.Eventually(t, func() bool {
+		return !strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=")
+	}, 10*time.Second, 100*time.Millisecond, "client disconnect should have interrupted the orphaned eval")
+
+	// And the session must be usable again: a follow-up eval completes rather
+	// than blocking on the lock the orphaned eval would otherwise hold.
+	doneCh := make(chan response, 1)
+	go func() {
+		doneCh <- sendRequest(t, socketPath, protocolRequest{Action: "eval", Session: "disc", Code: "1+1", Cwd: cwd})
+	}()
+	select {
+	case r := <-doneCh:
+		require.Empty(t, r.Error)
+	case <-time.After(40 * time.Second):
+		require.Fail(t, "follow-up eval blocked — session was not freed after client disconnect")
+	}
+}
+
 func TestRevisePicksUpPackageChanges(t *testing.T) {
 	socketPath, stop, _ := startTestDaemon(t)
 	defer stop()
