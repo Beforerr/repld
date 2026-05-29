@@ -225,7 +225,7 @@ Session routing (priority order):
 Commands:
   sessions             List active Julia sessions
   trace                Print the last saved Julia error traceback for this session
-  interrupt            Send SIGINT (then SIGKILL after 3s) to the targeted session
+  interrupt            Interrupt the in-flight eval (SIGKILL after 3s if unresponsive)
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
     --idle-timeout SECS  Shut down after idle (default: 3600)
@@ -250,16 +250,18 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
+	provided := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+
 	// -E / --print: evaluate and display result
-	if code := first(*printShort, *printLong); code != "" {
-		cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *juliaCmdFlag, true, *freshFlag, *traceFlag)
+	if provided["E"] || provided["print"] {
+		cmdEval(*socketFlag, first(*printShort, *printLong), *projectFlag, *sessionFlag, *juliaCmdFlag, true, *freshFlag, *traceFlag)
 		return
 	}
 
 	// -e / --eval: evaluate mode
-	code := first(*evalShort, *evalLong)
-	if code != "" {
-		cmdEval(*socketFlag, code, *projectFlag, *sessionFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
+	if provided["e"] || provided["eval"] {
+		cmdEval(*socketFlag, first(*evalShort, *evalLong), *projectFlag, *sessionFlag, *juliaCmdFlag, false, *freshFlag, *traceFlag)
 		return
 	}
 
