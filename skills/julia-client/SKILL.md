@@ -15,6 +15,10 @@ Treat `julia-client` like persistent REPL: run setup once with `julia-client -E 
   - struct/type redefinition
   - adding `using NewPkg` inside modules whose `Project.toml` didn't already list `NewPkg` dep (the module's load-time dep view is cached so `Pkg.add`+edit isn't enough)
 
+## Environment
+
+- `JULIA_EXE` — Path to the Julia binary. If unset, `julia` is looked up in `$PATH`.
+
 ## Other Examples
 
 ```bash

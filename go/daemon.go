@@ -166,7 +166,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	if req.Fresh {
 		state.manager.restart(req.Session, req.Project, req.Cwd)
 	}
-	sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaArgs)
+	sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaExe, req.JuliaArgs)
 	if err != nil {
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return

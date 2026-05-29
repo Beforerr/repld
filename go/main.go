@@ -59,6 +59,7 @@ type protocolRequest struct {
 	Project     string   `json:"project,omitempty"`
 	Session     string   `json:"session,omitempty"`
 	JuliaArgs   []string `json:"julia_args,omitempty"` // extra switches forwarded to the julia subprocess
+	JuliaExe    string   `json:"julia_exe,omitempty"`  // custom Julia binary path
 	PrintResult bool     `json:"print_result,omitempty"`
 	Fresh       bool     `json:"fresh,omitempty"`
 	TraceLevel  string   `json:"trace_level,omitempty"`
@@ -146,7 +147,7 @@ func normalizeProjectArg(project string) string {
 	return projectArg
 }
 
-func cmdEval(socketPath, code, project, session string, printResult, fresh bool, traceLevel string, juliaArgs []string) {
+func cmdEval(socketPath, code, project, session, juliaExe string, printResult, fresh bool, traceLevel string, juliaArgs []string) {
 	if code == "-" {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -161,6 +162,7 @@ func cmdEval(socketPath, code, project, session string, printResult, fresh bool,
 		Cwd:         mustGetwd(),
 		Project:     normalizeProjectArg(project),
 		Session:     session,
+		JuliaExe:    juliaExe,
 		TraceLevel:  traceLevel,
 		JuliaArgs:   juliaArgs,
 		PrintResult: printResult,
@@ -249,6 +251,7 @@ var subcommands = map[string]bool{
 // passthrough switches for the Julia subprocess.
 type parsed struct {
 	socket    string
+	juliaExe  string
 	project   string
 	session   string
 	trace     string
@@ -270,16 +273,17 @@ type parsed struct {
 func parseArgs(args []string) parsed {
 	// Canonical name (dashes/value stripped) -> setter on p.
 	value := map[string]func(*parsed, string){
-		"e":       func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
-		"eval":    func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
-		"E":       func(p *parsed, v string) { p.evalMode, p.code = "print", v },
-		"print":   func(p *parsed, v string) { p.evalMode, p.code = "print", v },
-		"socket":  func(p *parsed, v string) { p.socket = v },
-		"project": func(p *parsed, v string) { p.project = v },
-		"session": func(p *parsed, v string) { p.session = v },
-		"trace":   func(p *parsed, v string) { p.trace = v },
-		"t":       func(p *parsed, v string) { p.threads = v },
-		"threads": func(p *parsed, v string) { p.threads = v },
+		"e":          func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
+		"eval":       func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
+		"E":          func(p *parsed, v string) { p.evalMode, p.code = "print", v },
+		"print":      func(p *parsed, v string) { p.evalMode, p.code = "print", v },
+		"socket":     func(p *parsed, v string) { p.socket = v },
+
+		"project":    func(p *parsed, v string) { p.project = v },
+		"session":    func(p *parsed, v string) { p.session = v },
+		"trace":      func(p *parsed, v string) { p.trace = v },
+		"t":          func(p *parsed, v string) { p.threads = v },
+		"threads":    func(p *parsed, v string) { p.threads = v },
 	}
 
 	p := parsed{socket: defaultSocket, project: "@."}
@@ -342,9 +346,12 @@ func main() {
 		juliaArgs = append(juliaArgs, "-t", t)
 	}
 
+	// JULIA_EXE selects the Julia binary; empty means look up "julia" in PATH.
+	juliaExe := os.Getenv("JULIA_EXE")
+
 	switch {
 	case p.evalMode != "":
-		cmdEval(p.socket, p.code, p.project, p.session, p.evalMode == "print", p.fresh, p.trace, juliaArgs)
+		cmdEval(p.socket, p.code, p.project, p.session, juliaExe, p.evalMode == "print", p.fresh, p.trace, juliaArgs)
 	case len(p.files) > 0:
 		f := p.files[0]
 		if _, err := os.Stat(f); err != nil {
@@ -352,14 +359,14 @@ func main() {
 			usage()
 		}
 		code := fmt.Sprintf("cd(%q) do; Base.include(Main, %q); end", mustGetwd(), f)
-		cmdEval(p.socket, code, p.project, p.session, false, p.fresh, p.trace, juliaArgs)
+		cmdEval(p.socket, code, p.project, p.session, juliaExe, false, p.fresh, p.trace, juliaArgs)
 	default:
 		// No code given: read stdin only if it's a pipe/redirect, not a terminal.
 		fi, err := os.Stdin.Stat()
 		if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
 			usage()
 		}
-		cmdEval(p.socket, "-", p.project, p.session, false, p.fresh, p.trace, juliaArgs)
+		cmdEval(p.socket, "-", p.project, p.session, juliaExe, false, p.fresh, p.trace, juliaArgs)
 	}
 }
 
