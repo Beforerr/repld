@@ -184,26 +184,75 @@ end
 
 _hex(s) = bytes2hex(Vector{UInt8}(codeunits(s)))
 
+# Interrupt channel (fd 4): client writes a byte; we forward it to the running
+# eval task as a catchable InterruptException. SIGINT is unusable here — with
+# stdin piped + multiple threads it lands on the wrong task and crashes.
+const _CURRENT = Ref{Union{Task,Nothing}}(nothing)
+
+function _start_interrupt_listener()
+    # libuv pipe so reads yield through the event loop; a blocking IOStream read
+    # on fd 4 trips a libuv assertion.
+    pipe = try
+        p = Base.PipeEndpoint()
+        err = ccall(:uv_pipe_open, Cint, (Ptr{Cvoid}, Cint), p.handle, Cint(4))
+        err == 0 || error("uv_pipe_open failed ($err)")
+        p.status = Base.StatusOpen
+        p
+    catch
+        return
+    end
+    @async while true
+        try
+            read(pipe, UInt8)
+        catch
+            break # EOF: client gone
+        end
+        t = _CURRENT[]
+        isnothing(t) && continue
+        try
+            schedule(t, InterruptException(); error=true)
+        catch
+        end
+    end
+    return nothing
+end
+
 function run(hex_code, print_result)
     code = String(hex2bytes(hex_code))
-    try
+    # Eval on a worker task so the fd-4 listener can target it.
+    task = Task() do
         try
             isdefined(Main, :Revise) && Main.Revise.revise()
         catch
         end
-        value = include_string(Main, code, "julia-client-eval")
+        include_string(Main, code, "julia-client-eval")
+    end
+    _CURRENT[] = task
+    schedule(task)
+    local value
+    err = bt = nothing
+    try
+        value = fetch(task)
+    catch
+        err, bt = task.result, task.backtrace
+    finally
+        _CURRENT[] = nothing
+    end
+    if isnothing(err)
         if print_result
             show(IOContext(stdout, :limit => true), MIME("text/plain"), value)
             println(stdout)
         end
         flush(stdout)
         _write_control("OK")
-    catch err
-        short, smart, full = _render_error(err, catch_backtrace())
+    else
+        short, smart, full = _render_error(err, bt)
         flush(stdout)
         _write_control(string("ERR ", _hex(short), " ", _hex(smart), " ", _hex(full)))
     end
     return nothing
 end
+
+_start_interrupt_listener()
 
 end

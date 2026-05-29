@@ -306,7 +306,7 @@ func TestEvalErrorTraceSaved(t *testing.T) {
 		TraceLevel: "full",
 	})
 	require.Empty(t, trace.Error)
-	require.Contains(t, trace.Output, "eval_user_input")
+	require.Contains(t, trace.Output, "include_string")
 
 	resp = sendRequest(t, socketPath, protocolRequest{
 		Action:     "eval",
@@ -476,10 +476,9 @@ func TestInterruptUnknownSession(t *testing.T) {
 	require.Contains(t, resp.Error, "no session")
 }
 
-// TestInterruptBusyAndUnblocks covers: (1) sessions listing reports busy=
-// while a call is in flight, (2) interrupt unblocks the in-flight call.
-// State preservation is best-effort — Julia 1.12 SIGINT during sleep often
-// crashes the subprocess, so we don't assert globals survive.
+// TestInterruptBusyAndUnblocks: sessions reports busy= during a call; interrupt
+// unblocks it as a catchable InterruptException; the session survives with
+// pre-interrupt state intact.
 func TestInterruptBusyAndUnblocks(t *testing.T) {
 	socketPath, stop, _ := startTestDaemon(t)
 	defer stop()
@@ -493,17 +492,15 @@ func TestInterruptBusyAndUnblocks(t *testing.T) {
 		return sendRequest(t, socketPath, req)
 	}
 
-	// Prime the session so subsequent calls don't pay startup cost.
-	resp := send(protocolRequest{Action: "eval", Session: "irq", Code: "1+1"})
+	// Prime the session and set state that must survive the interrupt.
+	resp := send(protocolRequest{Action: "eval", Session: "irq", Code: "marker = 1234"})
 	require.Empty(t, resp.Error)
 
-	// Kick off a long sleep in a goroutine.
 	done := make(chan response, 1)
 	go func() {
 		done <- send(protocolRequest{Action: "eval", Session: "irq", Code: "sleep(60)"})
 	}()
 
-	// Wait until the session reports busy.
 	deadline := time.Now().Add(5 * time.Second)
 	var sessResp response
 	for time.Now().Before(deadline) {
@@ -515,19 +512,21 @@ func TestInterruptBusyAndUnblocks(t *testing.T) {
 	}
 	require.Contains(t, sessResp.Output, "busy=", "sessions listing should show busy= while a call is in flight")
 
-	// Interrupt — accept either "interrupted" (survived) or "killed" (crashed).
 	irq := send(protocolRequest{Action: "interrupt", Session: "irq"})
 	require.Empty(t, irq.Error)
-	require.True(t,
-		strings.Contains(irq.Output, "interrupted") || strings.Contains(irq.Output, "killed"),
-		"interrupt should report a terminal outcome, got: %q", irq.Output)
+	require.Contains(t, irq.Output, "interrupted", "sleep must survive the interrupt, got: %q", irq.Output)
+	require.NotContains(t, irq.Output, "killed")
 
-	// The in-flight goroutine must return promptly.
 	select {
-	case <-done:
+	case r := <-done:
+		require.Contains(t, r.Error, "InterruptException")
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "interrupted call did not return")
 	}
+
+	after := send(protocolRequest{Action: "eval", Session: "irq", Code: "print(marker)"})
+	require.Empty(t, after.Error, "session must survive interrupt, not restart")
+	require.Equal(t, "1234", after.Output, "pre-interrupt state must persist")
 }
 
 // TestClientDisconnectInterruptsEval covers the `timeout 30 julia-client`
@@ -540,8 +539,8 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	// Prime the session so the long eval isn't waiting on Julia startup.
-	resp := sendRequest(t, socketPath, protocolRequest{Action: "eval", Session: "disc", Code: "1+1", Cwd: cwd})
+	// Prime the session and set state that must survive the disconnect-interrupt.
+	resp := sendRequest(t, socketPath, protocolRequest{Action: "eval", Session: "disc", Code: "marker = 5678", Cwd: cwd})
 	require.Empty(t, resp.Error)
 
 	// Start a long eval on its own connection.
@@ -569,15 +568,16 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 		return !strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=")
 	}, 10*time.Second, 100*time.Millisecond, "client disconnect should have interrupted the orphaned eval")
 
-	// And the session must be usable again: a follow-up eval completes rather
-	// than blocking on the lock the orphaned eval would otherwise hold.
+	// Session must be usable again AND have survived with state intact (not
+	// silently restarted): a follow-up eval reads back the pre-interrupt marker.
 	doneCh := make(chan response, 1)
 	go func() {
-		doneCh <- sendRequest(t, socketPath, protocolRequest{Action: "eval", Session: "disc", Code: "1+1", Cwd: cwd})
+		doneCh <- sendRequest(t, socketPath, protocolRequest{Action: "eval", Session: "disc", Code: "print(marker)", Cwd: cwd})
 	}()
 	select {
 	case r := <-doneCh:
 		require.Empty(t, r.Error)
+		require.Equal(t, "5678", r.Output, "session must survive disconnect-interrupt with state intact")
 	case <-time.After(40 * time.Second):
 		require.Fail(t, "follow-up eval blocked — session was not freed after client disconnect")
 	}

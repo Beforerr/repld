@@ -28,12 +28,13 @@ type JuliaSession struct {
 	sentinel   string
 	juliaCmd   string
 
-	proc    *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	stderr  *bufio.Reader
-	control *bufio.Reader // fd 3: framed eval status/error from the runtime
-	mu      sync.Mutex
+	proc       *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     *bufio.Reader
+	stderr     *bufio.Reader
+	control    *bufio.Reader // fd 3: framed eval status/error from the runtime
+	interruptW io.WriteCloser // fd 4: write a byte to interrupt the in-flight eval
+	mu         sync.Mutex
 
 	dead      atomic.Bool
 	busySince atomic.Int64 // UnixNano of current call start; 0 when idle
@@ -91,49 +92,63 @@ func (s *JuliaSession) start(workDir string) error {
 		return err
 	}
 
-	outR, outW, err := os.Pipe()
+	// Track every pipe end so any failure below can close them in one shot.
+	var opened []*os.File
+	pipe := func() (r, w *os.File, err error) {
+		r, w, err = os.Pipe()
+		if err == nil {
+			opened = append(opened, r, w)
+		}
+		return
+	}
+	closeAll := func() {
+		for _, f := range opened {
+			f.Close()
+		}
+	}
+
+	outR, outW, err := pipe()
 	if err != nil {
 		return err
 	}
-	errR, errW, err := os.Pipe()
+	errR, errW, err := pipe()
 	if err != nil {
-		outW.Close()
-		outR.Close()
+		closeAll()
 		return err
 	}
 	// Control channel: user output stays on the real stdout/stderr pipes (so we
 	// capture everything, including C-level/subprocess writes), while the
 	// runtime reports structured eval status/errors out-of-band on fd 3.
-	ctrlR, ctrlW, err := os.Pipe()
+	ctrlR, ctrlW, err := pipe()
 	if err != nil {
-		outW.Close()
-		outR.Close()
-		errW.Close()
-		errR.Close()
+		closeAll()
+		return err
+	}
+	// Interrupt channel: child reads fd 4 (see interrupt()).
+	intR, intW, err := pipe()
+	if err != nil {
+		closeAll()
 		return err
 	}
 	cmd.Stdout = outW
 	cmd.Stderr = errW
-	cmd.ExtraFiles = []*os.File{ctrlW} // becomes fd 3 in the child
+	cmd.ExtraFiles = []*os.File{ctrlW, intR} // become fd 3 (write) and fd 4 (read) in the child
 
 	if err := cmd.Start(); err != nil {
-		outW.Close()
-		outR.Close()
-		errW.Close()
-		errR.Close()
-		ctrlW.Close()
-		ctrlR.Close()
+		closeAll()
 		return err
 	}
 	outW.Close()
 	errW.Close()
 	ctrlW.Close() // child holds the only write end now
+	intR.Close()  // child holds the only read end now
 
 	s.proc = cmd
 	s.stdin = stdin
 	s.stdout = bufio.NewReaderSize(outR, 64*1024*1024)
 	s.stderr = bufio.NewReaderSize(errR, 64*1024*1024)
 	s.control = bufio.NewReader(ctrlR)
+	s.interruptW = intW
 
 	// Wait for Julia's interactive prompt to appear
 	if _, err := s.executeRaw("", nil, false, startupTimeout); err != nil {
@@ -387,11 +402,11 @@ func (s *JuliaSession) kill() {
 	}
 }
 
-// interrupt sends SIGINT to the Julia subprocess. If the in-flight call
-// (if any) doesn't return within graceSecs, escalates to SIGKILL.
-// Returns survived=true only if the call ended and the process is still
-// alive. Julia's SIGINT handling is best-effort: it sometimes crashes the
-// process even when the interrupt is "successful" from our side.
+// interrupt writes to the fd-4 channel; the runtime turns it into a catchable
+// InterruptException on the eval task (see julia_client_runtime.jl). Escalates
+// to SIGKILL if the call doesn't return within graceSecs; returns survived=true
+// only if the call ended and the process is still alive. Falls back to SIGINT
+// when the channel is unavailable (e.g. Windows).
 func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 	if !s.isAlive() {
 		return false, fmt.Errorf("session is not alive")
@@ -403,7 +418,11 @@ func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 		// Nothing to interrupt; treat as no-op success.
 		return true, nil
 	}
-	if err := s.proc.Process.Signal(syscall.SIGINT); err != nil {
+	if s.interruptW != nil {
+		if _, werr := s.interruptW.Write([]byte{'\n'}); werr != nil {
+			return false, werr
+		}
+	} else if err := s.proc.Process.Signal(syscall.SIGINT); err != nil {
 		return false, err
 	}
 	deadline := time.After(time.Duration(float64(time.Second) * graceSecs))
