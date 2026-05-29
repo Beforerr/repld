@@ -67,9 +67,9 @@ func TestHandleRequest_Stop(t *testing.T) {
 
 func TestHandleRequest_SessionsShowsRouteAndProject(t *testing.T) {
 	state := newTestState()
-	projectSession := newJuliaSession("@temp", "sentinel", nil)
-	namedSession := newJuliaSession("@temp", "sentinel", []string{"+1.12", "--startup-file=no"})
-	deadSession := newJuliaSession("@shareAnyname", "sentinel", nil)
+	projectSession := newJuliaSession("@temp", "sentinel", nil, nil)
+	namedSession := newJuliaSession("@temp", "sentinel", []string{"+1.12", "--startup-file=no"}, nil)
+	deadSession := newJuliaSession("@shareAnyname", "sentinel", nil, nil)
 	deadSession.dead.Store(true)
 	state.manager.sessions["@temp"] = projectSession
 	state.manager.sessions["~temp"] = namedSession
