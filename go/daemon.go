@@ -58,8 +58,8 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 			} else if s.busyFor > 0 {
 				line += fmt.Sprintf(" busy=%.1fs", s.busyFor.Seconds())
 			}
-			if s.juliaCmd != "" {
-				line += " julia_cmd=" + s.juliaCmd
+			if len(s.juliaArgs) > 0 {
+				line += " julia_args=" + strings.Join(s.juliaArgs, " ")
 			}
 			if s.logFile != "" {
 				line += " log=" + s.logFile
@@ -166,7 +166,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	if req.Fresh {
 		state.manager.restart(req.Session, req.Project, req.Cwd)
 	}
-	sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaCmd)
+	sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaArgs)
 	if err != nil {
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return

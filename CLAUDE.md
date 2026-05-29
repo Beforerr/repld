@@ -6,7 +6,7 @@ Single Go binary (`go/`) that doubles as client and daemon.
 
 **Daemon mode** (`daemon` subcommand): long-lived server (`go/daemon.go`) holding a `SessionManager`. Sessions are keyed by absolute project path (or a temp dir when no project is found). Shuts down after 1 hour of inactivity.
 
-**Session** (`go/session.go`): wraps a single `julia -i --threads=auto --project=<dir>` subprocess. Code is hex-encoded and eval'd via `include_string(Main, String(hex2bytes("...")))` to avoid quoting issues.
+**Session** (`go/session.go`): wraps a single `julia [+channel] -i <forwarded switches> --project=<dir>` subprocess. Switches julia-client doesn't own are forwarded verbatim, applied only at session creation. Code is hex-encoded and eval'd via `include_string(Main, String(hex2bytes("...")))` to avoid quoting issues.
 
 ## Eval wire protocol (session ↔ Julia subprocess)
 
@@ -23,7 +23,7 @@ Invariants:
 
 ## Key files
 
-- `go/main.go` - CLI flags, env detection, client send/receive
+- `go/main.go` - CLI arg scanner (`parseArgs`: own flags vs forwarded switches), client send/receive
 - `go/daemon.go` - Request dispatch, inactivity timer, client-disconnect→interrupt watcher
 - `go/session.go` - `JuliaSession`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt
 - `go/manager.go` - `SessionManager`: session map, routing/keying, per-session logs

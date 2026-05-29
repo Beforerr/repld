@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,13 +25,13 @@ const startupTimeout = 120.0
 type JuliaSession struct {
 	projectVal string // pre-computed --project= arg (also used for display)
 	sentinel   string
-	juliaCmd   string
+	juliaArgs  []string // switches forwarded to the julia subprocess
 
 	proc       *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     *bufio.Reader
 	stderr     *bufio.Reader
-	control    *bufio.Reader // fd 3: framed eval status/error from the runtime
+	control    *bufio.Reader  // fd 3: framed eval status/error from the runtime
 	interruptW io.WriteCloser // fd 4: write a byte to interrupt the in-flight eval
 	mu         sync.Mutex
 
@@ -47,41 +46,30 @@ func newSentinel() string {
 	return fmt.Sprintf("__JULIA_CLIENT_%s__", hex.EncodeToString(b))
 }
 
-func newJuliaSession(projectVal, sentinel, juliaCmd string, logFile *os.File) *JuliaSession {
+func newJuliaSession(projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
 	return &JuliaSession{
 		projectVal: projectVal,
 		sentinel:   sentinel,
-		juliaCmd:   juliaCmd,
+		juliaArgs:  juliaArgs,
 		logFile:    logFile,
 	}
 }
 
 func (s *JuliaSession) start(workDir string) error {
-	exe := "julia"
-	var channelArgs, extraFlags []string
-
-	if s.juliaCmd != "" {
-		parts := strings.Fields(s.juliaCmd)
-		exe = parts[0]
-		rest := parts[1:]
-		if len(rest) > 0 && strings.HasPrefix(rest[0], "+") {
-			channelArgs = rest[:1]
-			extraFlags = rest[1:]
-		} else {
-			extraFlags = rest
-		}
+	exe, err := exec.LookPath("julia")
+	if err != nil {
+		return fmt.Errorf("'julia' not found in PATH. Install Julia from https://julialang.org/downloads/")
 	}
 
-	if !filepath.IsAbs(exe) {
-		resolved, err := exec.LookPath(exe)
-		if err != nil {
-			return fmt.Errorf("'%s' not found in PATH. Install Julia from https://julialang.org/downloads/", exe)
-		}
-		exe = resolved
+	// A juliaup channel (+x) must be Julia's very first argument; keep it there.
+	var args []string
+	rest := s.juliaArgs
+	if len(rest) > 0 && strings.HasPrefix(rest[0], "+") {
+		args = append(args, rest[0])
+		rest = rest[1:]
 	}
-
-	args := append(channelArgs, "-i", "--threads=auto")
-	args = append(args, extraFlags...)
+	args = append(args, "-i")
+	args = append(args, rest...)
 	args = append(args, fmt.Sprintf("--project=%s", s.projectVal))
 
 	cmd := exec.Command(exe, args...)
