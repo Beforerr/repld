@@ -56,7 +56,7 @@ func (m *SessionManager) openLogFile(key string) *os.File {
 
 // juliaArgs apply only when a session is first created; a live session for the
 // key is reused as-is regardless (use --fresh to rebuild with new args).
-func (m *SessionManager) getOrCreate(cwd, project, session string, juliaArgs []string) (*JuliaSession, error) {
+func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, juliaArgs []string) (*JuliaSession, error) {
 	key := m.key(session, project, cwd)
 
 	// Fast path: return existing live session without singleflight overhead.
@@ -86,7 +86,7 @@ func (m *SessionManager) getOrCreate(cwd, project, session string, juliaArgs []s
 		if projectVal == "" {
 			projectVal = "@."
 		}
-		sess = newJuliaSession(projectVal, newSentinel(), juliaArgs, m.openLogFile(key))
+		sess = newJuliaSession(projectVal, newSentinel(), juliaArgs, juliaExe, m.openLogFile(key))
 		if err := sess.start(cwd); err != nil {
 			return nil, err
 		}

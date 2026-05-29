@@ -31,6 +31,9 @@ Or manually by adding this repo's `skills/` directory to your Agent skill search
 # Evaluate code (daemon starts automatically)
 julia-client -e 'println("hello")'
 
+# Use a custom Julia binary via JULIA_EXE environment variable
+JULIA_EXE=/path/to/julia julia-client -e 'println("hello")'
+
 # Explicit project: each distinct --project is its own session
 julia-client --project /path/to/project -e 'using MyPackage'
 julia-client --project @temp -e 'using Pkg; Pkg.add("Example")'
