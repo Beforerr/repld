@@ -15,8 +15,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 )
 
 //go:embed julia_client_runtime.jl
@@ -197,8 +195,9 @@ func (s *JuliaSession) parseJuliaError(output string) (string, *juliaEvalError) 
 	}
 }
 
-// Returns stdout buffer (for parseJuliaError); stderr streams via onChunk only.
-// HasSuffix sentinel detection tolerates unterminated user lines.
+// Returns the captured error block (for parseJuliaError), or "" if none;
+// normal stdout streams via onChunk only and is not retained. stderr streams
+// via onChunk only. HasSuffix sentinel detection tolerates unterminated lines.
 func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStderr bool), timeoutSecs float64) (string, error) {
 	// stdout and stderr are read by separate goroutines below, but the
 	// consumer (daemon JSON encoder, session log) is not safe for concurrent
@@ -228,20 +227,36 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 
 	outCh := make(chan readResult, 1)
 	go func() {
-		var buf strings.Builder
+		// Normal stdout is streamed via emit and not retained: callers discard
+		// the returned string except to feed parseJuliaError, which only needs
+		// the error block. So buffer just that (bounded by the error size), plus
+		// a bounded tail of recent output for the "died during execution"
+		// diagnostic. This keeps daemon memory flat regardless of output volume.
+		const maxTail = 64 * 1024
+		var errBuf strings.Builder
+		var tail []byte
+		appendTail := func(s string) {
+			tail = append(tail, s...)
+			if len(tail) > maxTail {
+				tail = append(tail[:0], tail[len(tail)-maxTail:]...)
+			}
+		}
+		died := func() {
+			s.dead.Store(true)
+			outCh <- readResult{errBuf.String(), fmt.Errorf("Julia process died during execution.\nOutput before death:\n%s", string(tail))}
+		}
 		inErrorBlock := false
 		for {
 			line, err := s.stdout.ReadString('\n')
 			raw := strings.TrimRight(line, "\r\n")
 
 			if inErrorBlock {
-				buf.WriteString(line)
+				errBuf.WriteString(line)
 				if strings.HasPrefix(raw, endMarker) {
 					inErrorBlock = false
 				}
 				if err != nil {
-					s.dead.Store(true)
-					outCh <- readResult{buf.String(), fmt.Errorf("Julia process died during execution.\nOutput before death:\n%s", buf.String())}
+					died()
 					return
 				}
 				continue
@@ -249,33 +264,32 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 
 			if strings.HasSuffix(raw, s.sentinel) {
 				if prefix := strings.TrimSuffix(raw, s.sentinel); prefix != "" {
-					buf.WriteString(prefix)
+					appendTail(prefix)
 					if emit != nil {
 						emit(prefix, false)
 					}
 				}
-				outCh <- readResult{buf.String(), nil}
+				outCh <- readResult{errBuf.String(), nil}
 				return
 			}
 			if strings.HasSuffix(raw, startMarker) {
 				if prefix := strings.TrimSuffix(raw, startMarker); prefix != "" {
-					buf.WriteString(prefix)
+					appendTail(prefix)
 					if emit != nil {
 						emit(prefix, false)
 					}
 				}
-				buf.WriteString(startMarker + "\n")
+				errBuf.WriteString(startMarker + "\n")
 				inErrorBlock = true
 				continue
 			}
 
 			if err != nil {
-				s.dead.Store(true)
-				outCh <- readResult{buf.String(), fmt.Errorf("Julia process died during execution.\nOutput before death:\n%s", buf.String())}
+				died()
 				return
 			}
 
-			buf.WriteString(line)
+			appendTail(line)
 			if emit != nil {
 				emit(line, false)
 			}
@@ -435,194 +449,4 @@ func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 			}
 		}
 	}
-}
-
-// SessionManager tracks multiple named Julia sessions.
-type SessionManager struct {
-	mu         sync.Mutex
-	sessions   map[string]*JuliaSession
-	lastErrors map[string]*juliaEvalError
-	sf         singleflight.Group
-	logDir     string
-}
-
-func newSessionManager() *SessionManager {
-	logDir, _ := os.MkdirTemp("", "julia-client-logs-")
-	return &SessionManager{
-		sessions:   make(map[string]*JuliaSession),
-		lastErrors: make(map[string]*juliaEvalError),
-		logDir:     logDir,
-	}
-}
-
-// key returns the session map key.
-// Priority: explicit session label > explicit project path > cwd.
-func (m *SessionManager) key(session, project, cwd string) string {
-	if session != "" {
-		return "~" + session
-	}
-	if project != "" && project != "@." {
-		if strings.HasPrefix(project, "@") {
-			return project
-		}
-		abs, _ := filepath.Abs(project)
-		return abs
-	}
-	return cwd
-}
-
-func (m *SessionManager) openLogFile(key string) *os.File {
-	safe := strings.NewReplacer("/", "_", "\\", "_").Replace(strings.Trim(key, "/~"))
-	if safe == "" {
-		safe = "default"
-	}
-	f, _ := os.OpenFile(filepath.Join(m.logDir, safe+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	return f
-}
-
-func (m *SessionManager) getOrCreate(cwd, project, session, juliaCmd string) (*JuliaSession, error) {
-	key := m.key(session, project, cwd)
-
-	// Fast path: return existing live session without singleflight overhead.
-	m.mu.Lock()
-	sess := m.sessions[key]
-	m.mu.Unlock()
-	if sess != nil && sess.isAlive() && sess.juliaCmd == juliaCmd {
-		return sess, nil
-	}
-
-	// Slow path: deduplicate concurrent creation for the same key.
-	v, err, _ := m.sf.Do(key, func() (any, error) {
-		m.mu.Lock()
-		sess := m.sessions[key]
-		m.mu.Unlock()
-		if sess != nil && sess.isAlive() && sess.juliaCmd == juliaCmd {
-			return sess, nil
-		}
-		if sess != nil {
-			sess.kill()
-			m.mu.Lock()
-			delete(m.sessions, key)
-			m.mu.Unlock()
-		}
-
-		projectVal := project
-		if projectVal == "" {
-			projectVal = "@."
-		}
-		sess = newJuliaSession(projectVal, newSentinel(), juliaCmd, m.openLogFile(key))
-		if err := sess.start(cwd); err != nil {
-			return nil, err
-		}
-
-		m.mu.Lock()
-		m.sessions[key] = sess
-		m.mu.Unlock()
-		return sess, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return v.(*JuliaSession), nil
-}
-
-func (m *SessionManager) remove(session, project, cwd string) {
-	key := m.key(session, project, cwd)
-	m.mu.Lock()
-	delete(m.sessions, key)
-	m.mu.Unlock()
-}
-
-func (m *SessionManager) restart(session, project, cwd string) {
-	key := m.key(session, project, cwd)
-	m.mu.Lock()
-	sess := m.sessions[key]
-	delete(m.sessions, key)
-	delete(m.lastErrors, key)
-	m.mu.Unlock()
-	if sess != nil {
-		sess.kill()
-	}
-}
-
-func (m *SessionManager) recordError(session, project, cwd string, err *juliaEvalError) {
-	key := m.key(session, project, cwd)
-	m.mu.Lock()
-	m.lastErrors[key] = err
-	m.mu.Unlock()
-}
-
-func (m *SessionManager) lastError(session, project, cwd string) *juliaEvalError {
-	key := m.key(session, project, cwd)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.lastErrors[key]
-}
-
-type sessionInfo struct {
-	key      string
-	project  string
-	alive    bool
-	juliaCmd string
-	logFile  string
-	busyFor  time.Duration // 0 when idle
-}
-
-func (m *SessionManager) list() []sessionInfo {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	result := make([]sessionInfo, 0, len(m.sessions))
-	for key, sess := range m.sessions {
-		info := sessionInfo{
-			key:      key,
-			project:  sess.projectVal,
-			alive:    sess.isAlive(),
-			juliaCmd: sess.juliaCmd,
-		}
-		if since := sess.busySince.Load(); since != 0 {
-			info.busyFor = now.Sub(time.Unix(0, since))
-		}
-		if sess.logFile != nil {
-			info.logFile = sess.logFile.Name()
-		}
-		result = append(result, info)
-	}
-	return result
-}
-
-func (m *SessionManager) interrupt(session, project, cwd string, graceSecs float64) (string, error) {
-	key := m.key(session, project, cwd)
-	m.mu.Lock()
-	sess := m.sessions[key]
-	m.mu.Unlock()
-	if sess == nil {
-		return "", fmt.Errorf("no session for %s", key)
-	}
-	survived, err := sess.interrupt(graceSecs)
-	if err != nil {
-		return "", err
-	}
-	if !survived {
-		m.mu.Lock()
-		delete(m.sessions, key)
-		m.mu.Unlock()
-		return fmt.Sprintf("Session %s did not survive interrupt; killed.", key), nil
-	}
-	return fmt.Sprintf("Session %s interrupted.", key), nil
-}
-
-func (m *SessionManager) shutdown() {
-	m.mu.Lock()
-	sessions := make([]*JuliaSession, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		sessions = append(sessions, s)
-	}
-	m.sessions = make(map[string]*JuliaSession)
-	m.mu.Unlock()
-
-	for _, s := range sessions {
-		s.kill()
-	}
-	os.RemoveAll(m.logDir)
 }

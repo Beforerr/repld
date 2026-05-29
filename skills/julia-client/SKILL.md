@@ -26,5 +26,6 @@ julia-client trace --session scratch # show the last saved Julia traceback witho
 
 julia-client sessions   # list active sessions
 julia-client interrupt --session scratch  # SIGINT a stuck call; session state preserved if it responds within 3s
+timeout 30 julia-client -e 'might_hang()'  # killing the client interrupts the eval too — no orphaned computation
 julia-client stop       # shut down the daemon
 ```
