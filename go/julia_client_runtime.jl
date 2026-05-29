@@ -7,6 +7,8 @@ end
 
 module JuliaClientRuntime
 
+using Sockets
+
 function _file(frame)
     return replace(String(frame.file), '\\' => '/')
 end
@@ -170,10 +172,16 @@ function _render_error(err, bt)
     return short, smart, full
 end
 
-# Control channel (fd 3): the Go client passes a pipe as fd 3 and reads one
-# framed status line per eval. User output stays on stdout/stderr untouched.
+# Control channel: dial back to the loopback address the Go client passed and
+# authenticate with the shared token. One framed status line per eval flows out
+# (OK/ERR); interrupt bytes flow back in. A socket rather than an inherited fd
+# is what makes this work on Windows.
 const _CONTROL = try
-    fdio(3, true)
+    host, port = rsplit(ENV["JULIA_CLIENT_CONTROL_ADDR"], ":"; limit=2)
+    sock = Sockets.connect(host, parse(Int, port))
+    println(sock, ENV["JULIA_CLIENT_CONTROL_TOKEN"])
+    flush(sock)
+    sock
 catch
     nothing
 end
@@ -186,26 +194,17 @@ end
 
 _hex(s) = bytes2hex(Vector{UInt8}(codeunits(s)))
 
-# Interrupt channel (fd 4): client writes a byte; we forward it to the running
-# eval task as a catchable InterruptException. SIGINT is unusable here — with
-# stdin piped + multiple threads it lands on the wrong task and crashes.
+# Interrupt channel: the client writes a byte on the same control socket; we
+# forward it to the running eval task as a catchable InterruptException. SIGINT
+# is unusable here — with stdin piped + multiple threads it lands on the wrong
+# task and crashes. The socket read yields through libuv's event loop.
 const _CURRENT = Ref{Union{Task,Nothing}}(nothing)
 
 function _start_interrupt_listener()
-    # libuv pipe so reads yield through the event loop; a blocking IOStream read
-    # on fd 4 trips a libuv assertion.
-    pipe = try
-        p = Base.PipeEndpoint()
-        err = ccall(:uv_pipe_open, Cint, (Ptr{Cvoid}, Cint), p.handle, Cint(4))
-        err == 0 || error("uv_pipe_open failed ($err)")
-        p.status = Base.StatusOpen
-        p
-    catch
-        return
-    end
+    _CONTROL === nothing && return
     @async while true
         try
-            read(pipe, UInt8)
+            read(_CONTROL, UInt8)
         catch
             break # EOF: client gone
         end

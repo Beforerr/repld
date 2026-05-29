@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -159,7 +160,13 @@ func TestSessionManagerKeyPreservesJuliaProjectSelectors(t *testing.T) {
 // The returned WaitGroup is done when the daemon exits.
 func startTestDaemon(t *testing.T) (socketPath string, stop func(), wg *sync.WaitGroup) {
 	t.Helper()
-	socketDir, err := os.MkdirTemp("/tmp", "julia-client-test-")
+	// Keep the AF_UNIX path short (macOS caps it near 104 chars); /tmp is short
+	// on Unix, but doesn't exist on Windows, so fall back to the OS temp dir.
+	base := "/tmp"
+	if runtime.GOOS == "windows" {
+		base = os.TempDir()
+	}
+	socketDir, err := os.MkdirTemp(base, "julia-client-test-")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 	socketPath = filepath.Join(socketDir, "test.sock")
@@ -550,7 +557,7 @@ func TestInterruptUnknownSession(t *testing.T) {
 	resp := handleRequest(state, protocolRequest{
 		Action:  "interrupt",
 		Session: "nope",
-		Cwd:     "/tmp",
+		Cwd:     t.TempDir(),
 	})
 	require.NotEmpty(t, resp.Error)
 	require.Contains(t, resp.Error, "no session")
@@ -698,6 +705,10 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	require.Equal(t, "hello\n", resp.Output)
 
 	writePackage(`"goodbye"`)
-	resp = send("println(TestRevPkg.greet())")
-	require.Equal(t, "goodbye\n", resp.Output)
+	// Revise sees the rewrite asynchronously (FSEvents/mtime latency), so the
+	// reload is eventually-consistent; each eval runs Revise.revise() first, so
+	// retry until the new definition lands.
+	require.Eventually(t, func() bool {
+		return send("println(TestRevPkg.greet())").Output == "goodbye\n"
+	}, 15*time.Second, 250*time.Millisecond, "Revise did not pick up the package change")
 }
