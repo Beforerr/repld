@@ -67,9 +67,9 @@ func TestHandleRequest_Stop(t *testing.T) {
 
 func TestHandleRequest_SessionsShowsRouteAndProject(t *testing.T) {
 	state := newTestState()
-	projectSession := newJuliaSession("@temp", "sentinel", "", nil)
-	namedSession := newJuliaSession("@temp", "sentinel", "julia +1.12", nil)
-	deadSession := newJuliaSession("@shareAnyname", "sentinel", "", nil)
+	projectSession := newJuliaSession("@temp", "sentinel", nil, nil)
+	namedSession := newJuliaSession("@temp", "sentinel", []string{"+1.12", "--startup-file=no"}, nil)
+	deadSession := newJuliaSession("@shareAnyname", "sentinel", nil, nil)
 	deadSession.dead.Store(true)
 	state.manager.sessions["@temp"] = projectSession
 	state.manager.sessions["~temp"] = namedSession
@@ -80,7 +80,55 @@ func TestHandleRequest_SessionsShowsRouteAndProject(t *testing.T) {
 	require.Equal(t, `Active Julia sessions:
   project @shareAnyname status=dead
   project @temp
-  session temp project=@temp julia_cmd=julia +1.12`, resp.Output)
+  session temp project=@temp julia_args=+1.12 --startup-file=no`, resp.Output)
+}
+
+func TestParseArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want parsed
+	}{
+		{"eval", []string{"-e", "1+1"}, parsed{evalMode: "eval", code: "1+1"}},
+		{"print long", []string{"--print", "x"}, parsed{evalMode: "print", code: "x"}},
+		{"our flags", []string{"--session", "s", "--project", "p", "-t", "4"},
+			parsed{session: "s", project: "p", threads: "4"}},
+		{"passthrough after ours", []string{"--session", "s", "-L", "init.jl", "-e", "c"},
+			parsed{session: "s", evalMode: "eval", code: "c", juliaArgs: []string{"-L", "init.jl"}}},
+		{"passthrough before ours", []string{"-L", "init.jl", "-e", "c"},
+			parsed{evalMode: "eval", code: "c", juliaArgs: []string{"-L", "init.jl"}}},
+		{"eq form forwarded whole", []string{"--startup-file=no"},
+			parsed{juliaArgs: []string{"--startup-file=no"}}},
+		{"channel forwarded first", []string{"+1.11", "-e", "c"},
+			parsed{evalMode: "eval", code: "c", juliaArgs: []string{"+1.11"}}},
+		{"file positional", []string{"script.jl"}, parsed{files: []string{"script.jl"}}},
+		{"subcommand", []string{"sessions"}, parsed{sub: "sessions"}},
+		{"flags before subcommand", []string{"--socket", "x", "sessions"},
+			parsed{socket: "x", sub: "sessions"}},
+		{"subcommand after passthrough is forwarded", []string{"-L", "a.jl", "sessions"},
+			parsed{juliaArgs: []string{"-L", "a.jl", "sessions"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseArgs(tc.args)
+			// socket/project default unless the case overrides them.
+			if tc.want.socket == "" {
+				tc.want.socket = defaultSocket
+			}
+			if tc.want.project == "" {
+				tc.want.project = "@."
+			}
+			require.Equal(t, tc.want.socket, got.socket)
+			require.Equal(t, tc.want.project, got.project)
+			require.Equal(t, tc.want.session, got.session)
+			require.Equal(t, tc.want.threads, got.threads)
+			require.Equal(t, tc.want.evalMode, got.evalMode)
+			require.Equal(t, tc.want.code, got.code)
+			require.Equal(t, tc.want.juliaArgs, got.juliaArgs)
+			require.Equal(t, tc.want.files, got.files)
+			require.Equal(t, tc.want.sub, got.sub)
+		})
+	}
 }
 
 func TestNormalizeProjectArgPreservesJuliaSelectors(t *testing.T) {
@@ -224,6 +272,38 @@ func TestEvalBasic(t *testing.T) {
 	resp5 := send(protocolRequest{Action: "eval", Code: `println("with-nl")`})
 	require.Empty(t, resp5.Error)
 	require.Equal(t, "with-nl\n", resp5.Output)
+}
+
+// TestPerSessionThreads: a forwarded -t switch sets the thread count per session
+// at creation, so distinct sessions get independent counts; a reused session
+// keeps the count it was born with (a live process can't be re-threaded).
+func TestPerSessionThreads(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	nthreads := func(session, threads string) response {
+		return sendRequest(t, socketPath, protocolRequest{
+			Action: "eval", Session: session, Cwd: cwd,
+			JuliaArgs: []string{"-t", threads},
+			Code:      "print(Threads.nthreads())",
+		})
+	}
+
+	a := nthreads("thr-a", "2")
+	require.Empty(t, a.Error)
+	require.Equal(t, "2", a.Output)
+
+	// A second, distinct session gets its own count.
+	b := nthreads("thr-b", "3")
+	require.Empty(t, b.Error)
+	require.Equal(t, "3", b.Output)
+
+	// Reusing thr-a ignores the new value — the process keeps its launch count.
+	again := nthreads("thr-a", "4")
+	require.Empty(t, again.Error)
+	require.Equal(t, "2", again.Output)
 }
 
 // TestScriptFile exercises the full main() routing: julia-client script.jl

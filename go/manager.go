@@ -54,14 +54,16 @@ func (m *SessionManager) openLogFile(key string) *os.File {
 	return f
 }
 
-func (m *SessionManager) getOrCreate(cwd, project, session, juliaCmd string) (*JuliaSession, error) {
+// juliaArgs apply only when a session is first created; a live session for the
+// key is reused as-is regardless (use --fresh to rebuild with new args).
+func (m *SessionManager) getOrCreate(cwd, project, session string, juliaArgs []string) (*JuliaSession, error) {
 	key := m.key(session, project, cwd)
 
 	// Fast path: return existing live session without singleflight overhead.
 	m.mu.Lock()
 	sess := m.sessions[key]
 	m.mu.Unlock()
-	if sess != nil && sess.isAlive() && sess.juliaCmd == juliaCmd {
+	if sess != nil && sess.isAlive() {
 		return sess, nil
 	}
 
@@ -70,7 +72,7 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaCmd string) (*J
 		m.mu.Lock()
 		sess := m.sessions[key]
 		m.mu.Unlock()
-		if sess != nil && sess.isAlive() && sess.juliaCmd == juliaCmd {
+		if sess != nil && sess.isAlive() {
 			return sess, nil
 		}
 		if sess != nil {
@@ -84,7 +86,7 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaCmd string) (*J
 		if projectVal == "" {
 			projectVal = "@."
 		}
-		sess = newJuliaSession(projectVal, newSentinel(), juliaCmd, m.openLogFile(key))
+		sess = newJuliaSession(projectVal, newSentinel(), juliaArgs, m.openLogFile(key))
 		if err := sess.start(cwd); err != nil {
 			return nil, err
 		}
@@ -134,12 +136,12 @@ func (m *SessionManager) lastError(session, project, cwd string) *juliaEvalError
 }
 
 type sessionInfo struct {
-	key      string
-	project  string
-	alive    bool
-	juliaCmd string
-	logFile  string
-	busyFor  time.Duration // 0 when idle
+	key       string
+	project   string
+	alive     bool
+	juliaArgs []string
+	logFile   string
+	busyFor   time.Duration // 0 when idle
 }
 
 func (m *SessionManager) list() []sessionInfo {
@@ -149,10 +151,10 @@ func (m *SessionManager) list() []sessionInfo {
 	result := make([]sessionInfo, 0, len(m.sessions))
 	for key, sess := range m.sessions {
 		info := sessionInfo{
-			key:      key,
-			project:  sess.projectVal,
-			alive:    sess.isAlive(),
-			juliaCmd: sess.juliaCmd,
+			key:       key,
+			project:   sess.projectVal,
+			alive:     sess.isAlive(),
+			juliaArgs: sess.juliaArgs,
 		}
 		if since := sess.busySince.Load(); since != 0 {
 			info.busyFor = now.Sub(time.Unix(0, since))
