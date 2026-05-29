@@ -118,11 +118,13 @@ function _render_selected(frames; include_omitted)
     isempty(frames) && return ""
     println(io, "Stacktrace:")
     last_i = 0
+    n = 0
     for i in visible
         if include_omitted && i > last_i + 1
             println(io, _omitted_modules(frames, last_i + 1, i - 1))
         end
-        println(io, _frame_line(i, frames[i]))
+        n += 1
+        println(io, _frame_line(n, frames[i]))
         last_i = i
     end
     if include_omitted && last_i < length(frames)
