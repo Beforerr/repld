@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,13 +29,13 @@ type JuliaSession struct {
 	sentinel   string
 	juliaArgs  []string // switches forwarded to the julia subprocess
 
-	proc       *exec.Cmd
-	stdin      io.WriteCloser
-	stdout     *bufio.Reader
-	stderr     *bufio.Reader
-	control    *bufio.Reader  // fd 3: framed eval status/error from the runtime
-	interruptW io.WriteCloser // fd 4: write a byte to interrupt the in-flight eval
-	mu         sync.Mutex
+	proc        *exec.Cmd
+	stdin       io.WriteCloser
+	stdout      *bufio.Reader
+	stderr      *bufio.Reader
+	control     *bufio.Reader // loopback control conn: framed eval status/error read from the runtime
+	controlConn net.Conn      // same conn; write a byte on it to interrupt the in-flight eval
+	mu          sync.Mutex
 
 	dead      atomic.Bool
 	busySince atomic.Int64 // UnixNano of current call start; 0 when idle
@@ -116,23 +117,28 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 		closeAll()
 		return err
 	}
-	// Control channel: user output stays on the real stdout/stderr pipes (so we
-	// capture everything, including C-level/subprocess writes), while the
-	// runtime reports structured eval status/errors out-of-band on fd 3.
-	ctrlR, ctrlW, err := pipe()
-	if err != nil {
-		closeAll()
-		return err
-	}
-	// Interrupt channel: child reads fd 4 (see interrupt()).
-	intR, intW, err := pipe()
-	if err != nil {
-		closeAll()
-		return err
-	}
 	cmd.Stdout = outW
 	cmd.Stderr = errW
-	cmd.ExtraFiles = []*os.File{ctrlW, intR} // become fd 3 (write) and fd 4 (read) in the child
+
+	// Control channel: user output stays on the real stdout/stderr pipes (so we
+	// capture everything, including C-level/subprocess writes), while the
+	// runtime reports structured eval status/errors out-of-band. The runtime
+	// dials back on this loopback socket and we multiplex both directions over
+	// it: framed status (child→parent) and interrupt bytes (parent→child). A
+	// socket rather than inherited fds keeps this working on Windows, where
+	// exec.Cmd.ExtraFiles is unsupported. The token rejects any other local
+	// process that races to connect to the ephemeral port first.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		closeAll()
+		return err
+	}
+	defer ln.Close()
+	token := newSentinel()
+	cmd.Env = append(os.Environ(),
+		"JULIA_CLIENT_CONTROL_ADDR="+ln.Addr().String(),
+		"JULIA_CLIENT_CONTROL_TOKEN="+token,
+	)
 
 	if err := cmd.Start(); err != nil {
 		closeAll()
@@ -140,15 +146,23 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	}
 	outW.Close()
 	errW.Close()
-	ctrlW.Close() // child holds the only write end now
-	intR.Close()  // child holds the only read end now
 
 	s.proc = cmd
 	s.stdin = stdin
 	s.stdout = bufio.NewReaderSize(outR, 64*1024*1024)
 	s.stderr = bufio.NewReaderSize(errR, 64*1024*1024)
-	s.control = bufio.NewReader(ctrlR)
-	s.interruptW = intW
+
+	// The child only dials back once it loads the runtime (below), so accept
+	// concurrently. Missing/failed connection degrades to no control channel,
+	// mirroring the old "no fd 3" path rather than hanging.
+	controlReady := make(chan struct{})
+	go func() {
+		defer close(controlReady)
+		if conn, br := acceptControl(ln, token, startupTimeout); conn != nil {
+			s.controlConn = conn
+			s.control = br
+		}
+	}()
 
 	// Wait for Julia's interactive prompt to appear
 	if _, err := s.executeRaw("", nil, false, startupTimeout); err != nil {
@@ -158,7 +172,32 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	if _, err := s.executeRaw(fmt.Sprintf(`include_string(Main, String(hex2bytes("%s")), "julia-client runtime")`, runtimeHex), nil, false, startupTimeout); err != nil {
 		return fmt.Errorf("failed to load julia-client runtime: %w", err)
 	}
+	<-controlReady // control is established (or degraded) before the first eval
 	return nil
+}
+
+// acceptControl waits for the child to dial back on ln and present the shared
+// token as its first line, returning the verified connection and a buffered
+// reader over it. Returns nil if the child never connects in time or the token
+// is wrong, in which case control degrades to "no structured error".
+func acceptControl(ln net.Listener, token string, timeoutSecs float64) (net.Conn, *bufio.Reader) {
+	deadline := time.Now().Add(time.Duration(timeoutSecs * float64(time.Second)))
+	if tl, ok := ln.(*net.TCPListener); ok {
+		tl.SetDeadline(deadline)
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		return nil, nil
+	}
+	br := bufio.NewReaderSize(conn, 64*1024*1024)
+	conn.SetReadDeadline(deadline)
+	line, err := br.ReadString('\n')
+	if err != nil || strings.TrimRight(line, "\r\n") != token {
+		conn.Close()
+		return nil, nil
+	}
+	conn.SetReadDeadline(time.Time{}) // frames arrive whenever an eval runs
+	return conn, br
 }
 
 func (s *JuliaSession) isAlive() bool {
@@ -393,6 +432,9 @@ func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data 
 
 func (s *JuliaSession) kill() {
 	s.dead.Store(true)
+	if s.controlConn != nil {
+		s.controlConn.Close()
+	}
 	if s.proc != nil && s.proc.Process != nil {
 		s.proc.Process.Kill()
 		s.proc.Wait()
@@ -425,8 +467,8 @@ func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 	// target task once the eval ends, so any late byte is a no-op; the cadence is
 	// well below the listener's drain rate, so no backlog leaks into a next eval.
 	signal := func() error {
-		if s.interruptW != nil {
-			_, werr := s.interruptW.Write([]byte{'\n'})
+		if s.controlConn != nil {
+			_, werr := s.controlConn.Write([]byte{'\n'})
 			return werr
 		}
 		return s.proc.Process.Signal(syscall.SIGINT)
