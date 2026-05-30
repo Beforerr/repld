@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -711,4 +712,20 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return send("println(TestRevPkg.greet())").Output == "goodbye\n"
 	}, 15*time.Second, 250*time.Millisecond, "Revise did not pick up the package change")
+}
+
+// TestKillRunsAtexitHooks: a graceful shutdown must let Julia run its atexit
+// hooks (flush buffers, finalizers) rather than SIGKILL the process. The hook
+// writes a marker file; its presence proves the process exited cleanly.
+func TestKillRunsAtexitHooks(t *testing.T) {
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	sess := newJuliaSession(cwd, newSentinel(), nil, nil)
+	require.NoError(t, sess.start("", cwd))
+
+	marker := filepath.Join(t.TempDir(), "atexit.marker")
+	require.NoError(t, sess.execute(fmt.Sprintf(`atexit(() -> write(%q, "bye"))`, marker), false, nil))
+
+	sess.kill()
+	require.FileExists(t, marker, "graceful shutdown should run atexit hooks, not SIGKILL")
 }
