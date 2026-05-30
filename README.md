@@ -79,3 +79,4 @@ A single `julia-client` binary serves as both client and daemon:
 
 - [julia-mcp](https://github.com/aplavin/julia-mcp?tab=readme-ov-file) is very similar but uses MCP server instead
 - [DaemonicCabal.jl](https://github.com/tecosaur/DaemonicCabal.jl) only runs on Linux
+- [Malt.jl](https://github.com/JuliaPluto/Malt.jl) manages isolated Julia worker processes *from within Julia* (used by Pluto). Both run code in persistent, crash-isolated subprocesses, but Malt is a Julia library: its driver must be Julia, and it returns native typed values over Julia's serialization. julia-client targets non-Julia callers — a single dependency-free binary speaking a text protocol, so any language/shell/agent can drive it and Julia versions can be mixed freely (no cross-version serialization constraint). Reach for Malt when your caller is Julia and you need real objects back; reach for julia-client when it isn't.

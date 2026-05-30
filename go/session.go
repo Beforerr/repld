@@ -35,6 +35,7 @@ type JuliaSession struct {
 	stderr      *bufio.Reader
 	control     *bufio.Reader // loopback control conn: framed eval status/error read from the runtime
 	controlConn net.Conn      // same conn; write a byte on it to interrupt the in-flight eval
+	exited      chan struct{} // closed once by the reaper when proc exits; the single Wait()
 	mu          sync.Mutex
 
 	dead      atomic.Bool
@@ -148,6 +149,11 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	s.stdin = stdin
 	s.stdout = bufio.NewReaderSize(outR, 64*1024*1024)
 	s.stderr = bufio.NewReaderSize(errR, 64*1024*1024)
+
+	// Reap the process exactly once; everything that needs to wait for exit
+	// reads s.exited rather than calling Wait() again (which would error/race).
+	s.exited = make(chan struct{})
+	go func() { cmd.Wait(); close(s.exited) }()
 
 	// The child only dials back once it loads the runtime (below), so accept
 	// concurrently; a failed connection degrades to no control channel.
@@ -374,7 +380,7 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 		return r.evalErr, r.err
 	case <-timer.C:
 		s.proc.Process.Kill()
-		s.proc.Wait()
+		<-s.exited
 		s.dead.Store(true)
 		<-doneCh // both goroutines unblock on EOF after kill
 		return nil, fmt.Errorf("Execution timed out after %vs. Session killed; it will restart on next call.", timeoutSecs)
@@ -426,14 +432,48 @@ func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data 
 	return nil
 }
 
+const (
+	shutdownGrace = 5 * time.Second // clean REPL exit after stdin EOF
+	termGrace     = 2 * time.Second // SIGTERM grace before SIGKILL
+)
+
+// kill shuts the session down, escalating only as far as needed: close stdin so
+// the REPL hits EOF and exits cleanly (running atexit hooks and finalizers),
+// then SIGTERM, then SIGKILL. controlConn/logFile are closed last, after the
+// process is gone, so a clean exit isn't perturbed mid-shutdown.
 func (s *JuliaSession) kill() {
 	s.dead.Store(true)
+	defer s.closeResources()
+
+	if s.proc == nil || s.proc.Process == nil {
+		return
+	}
+	if s.stdin != nil {
+		s.stdin.Close()
+	}
+	if s.waitExit(shutdownGrace) {
+		return
+	}
+	terminateProc(s.proc.Process)
+	if s.waitExit(termGrace) {
+		return
+	}
+	s.proc.Process.Kill()
+	<-s.exited
+}
+
+func (s *JuliaSession) waitExit(d time.Duration) bool {
+	select {
+	case <-s.exited:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+func (s *JuliaSession) closeResources() {
 	if s.controlConn != nil {
 		s.controlConn.Close()
-	}
-	if s.proc != nil && s.proc.Process != nil {
-		s.proc.Process.Kill()
-		s.proc.Wait()
 	}
 	if s.logFile != nil {
 		s.logFile.Close()
@@ -481,7 +521,7 @@ func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
 		select {
 		case <-deadline:
 			s.proc.Process.Kill()
-			s.proc.Wait()
+			<-s.exited
 			s.dead.Store(true)
 			return false, nil
 		case <-resend.C:
