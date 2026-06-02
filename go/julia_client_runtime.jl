@@ -177,9 +177,9 @@ end
 # (OK/ERR); interrupt bytes flow back in. A socket rather than an inherited fd
 # is what makes this work on Windows.
 const _CONTROL = try
-    host, port = rsplit(ENV["JULIA_CLIENT_CONTROL_ADDR"], ":"; limit=2)
+    host, port = rsplit(ENV["REPLD_CONTROL_ADDR"], ":"; limit=2)
     sock = Sockets.connect(host, parse(Int, port))
-    println(sock, ENV["JULIA_CLIENT_CONTROL_TOKEN"])
+    println(sock, ENV["REPLD_CONTROL_TOKEN"])
     flush(sock)
     sock
 catch

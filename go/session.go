@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
-	_ "embed"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -18,16 +17,14 @@ import (
 	"time"
 )
 
-//go:embed julia_client_runtime.jl
-var juliaClientRuntime string
-
 const startupTimeout = 120.0
 
-// JuliaSession manages a single persistent Julia subprocess.
+// JuliaSession manages a single persistent interpreter subprocess.
 type JuliaSession struct {
+	adapter    Adapter
 	projectVal string // pre-computed --project= arg (also used for display)
 	sentinel   string
-	juliaArgs  []string // switches forwarded to the julia subprocess
+	juliaArgs  []string // switches forwarded to the subprocess
 
 	proc        *exec.Cmd
 	stdin       io.WriteCloser
@@ -49,8 +46,9 @@ func newSentinel() string {
 	return fmt.Sprintf("__JULIA_CLIENT_%s__", hex.EncodeToString(b))
 }
 
-func newJuliaSession(projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
+func newJuliaSession(adapter Adapter, projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
 	return &JuliaSession{
+		adapter:    adapter,
 		projectVal: projectVal,
 		sentinel:   sentinel,
 		juliaArgs:  juliaArgs,
@@ -69,23 +67,13 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 		}
 	} else {
 		var err error
-		exe, err = exec.LookPath("julia")
+		exe, err = exec.LookPath(s.adapter.DefaultExe())
 		if err != nil {
-			return fmt.Errorf("'julia' not found in PATH. Install Julia from https://julialang.org/downloads/")
+			return fmt.Errorf("'%s' not found in PATH", s.adapter.DefaultExe())
 		}
 	}
 
-	// A juliaup channel (+x) must be Julia's very first argument; keep it there.
-	var args []string
-	rest := s.juliaArgs
-	if len(rest) > 0 && strings.HasPrefix(rest[0], "+") {
-		args = append(args, rest[0])
-		rest = rest[1:]
-	}
-	args = append(args, "-i")
-	args = append(args, rest...)
-	args = append(args, fmt.Sprintf("--project=%s", s.projectVal))
-
+	args := s.adapter.LaunchArgs(s.projectVal, s.juliaArgs)
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = workDir
 
@@ -134,8 +122,8 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	defer ln.Close()
 	token := newSentinel()
 	cmd.Env = append(os.Environ(),
-		"JULIA_CLIENT_CONTROL_ADDR="+ln.Addr().String(),
-		"JULIA_CLIENT_CONTROL_TOKEN="+token,
+		"REPLD_CONTROL_ADDR="+ln.Addr().String(),
+		"REPLD_CONTROL_TOKEN="+token,
 	)
 
 	if err := cmd.Start(); err != nil {
@@ -170,9 +158,9 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	if _, err := s.executeRaw("", nil, false, startupTimeout); err != nil {
 		return fmt.Errorf("Julia startup failed: %w", err)
 	}
-	runtimeHex := hex.EncodeToString([]byte(juliaClientRuntime))
-	if _, err := s.executeRaw(fmt.Sprintf(`include_string(Main, String(hex2bytes("%s")), "julia-client runtime")`, runtimeHex), nil, false, startupTimeout); err != nil {
-		return fmt.Errorf("failed to load julia-client runtime: %w", err)
+	runtimeHex := hex.EncodeToString([]byte(s.adapter.RuntimeSource()))
+	if _, err := s.executeRaw(s.adapter.LoadRuntimeStmt(runtimeHex), nil, false, startupTimeout); err != nil {
+		return fmt.Errorf("failed to load runtime: %w", err)
 	}
 	<-controlReady // control is established (or degraded) before the first eval
 	return nil
@@ -224,10 +212,8 @@ func decodeHexString(s string) (string, error) {
 	return string(b), nil
 }
 
-// parseControlLine decodes one control frame from fd 3. The runtime writes
-// exactly one per eval: "OK" on success, or "ERR <hex short> <hex smart>
-// <hex full>" on a Julia error. A malformed or empty line degrades to "no
-// structured error" rather than failing the eval.
+// parseControlLine decodes one control frame: "OK", or "ERR <hex short> <hex
+// smart> <hex full>". Malformed/empty degrades to no structured error.
 func parseControlLine(line string) *juliaEvalError {
 	line = strings.TrimRight(line, "\r\n")
 	rest, ok := strings.CutPrefix(line, "ERR ")
@@ -304,11 +290,7 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 		}
 	}
 
-	sentinelCmd := fmt.Sprintf(
-		"flush(stderr); println(stderr, \"%s\"); flush(stderr); println(stdout, \"%s\"); flush(stdout)\n",
-		s.sentinel, s.sentinel,
-	)
-	if _, err := io.WriteString(s.stdin, code+"\n"+sentinelCmd); err != nil {
+	if _, err := io.WriteString(s.stdin, code+"\n"+s.adapter.SentinelStmt(s.sentinel)+"\n"); err != nil {
 		return nil, err
 	}
 
@@ -396,7 +378,7 @@ func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data 
 	}
 
 	hexCode := hex.EncodeToString([]byte(code))
-	wrapped := fmt.Sprintf(`Main.JuliaClientRuntime.run("%s", %t)`, hexCode, printResult)
+	wrapped := s.adapter.WrapEval(hexCode, printResult)
 
 	// Tee both streams to the log as they arrive. executeRaw serializes the
 	// callback, so stdout and stderr land interleaved in causal order — the

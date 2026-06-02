@@ -273,17 +273,17 @@ type parsed struct {
 func parseArgs(args []string) parsed {
 	// Canonical name (dashes/value stripped) -> setter on p.
 	value := map[string]func(*parsed, string){
-		"e":          func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
-		"eval":       func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
-		"E":          func(p *parsed, v string) { p.evalMode, p.code = "print", v },
-		"print":      func(p *parsed, v string) { p.evalMode, p.code = "print", v },
-		"socket":     func(p *parsed, v string) { p.socket = v },
+		"e":      func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
+		"eval":   func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
+		"E":      func(p *parsed, v string) { p.evalMode, p.code = "print", v },
+		"print":  func(p *parsed, v string) { p.evalMode, p.code = "print", v },
+		"socket": func(p *parsed, v string) { p.socket = v },
 
-		"project":    func(p *parsed, v string) { p.project = v },
-		"session":    func(p *parsed, v string) { p.session = v },
-		"trace":      func(p *parsed, v string) { p.trace = v },
-		"t":          func(p *parsed, v string) { p.threads = v },
-		"threads":    func(p *parsed, v string) { p.threads = v },
+		"project": func(p *parsed, v string) { p.project = v },
+		"session": func(p *parsed, v string) { p.session = v },
+		"trace":   func(p *parsed, v string) { p.trace = v },
+		"t":       func(p *parsed, v string) { p.threads = v },
+		"threads": func(p *parsed, v string) { p.threads = v },
 	}
 
 	p := parsed{socket: defaultSocket, project: "@."}
@@ -393,7 +393,7 @@ func dispatchSubcommand(p parsed) {
 		fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 		idleTimeout := fs.Float64("idle-timeout", 60*60, "Idle timeout in seconds")
 		fs.Parse(p.subArgs)
-		if err := serveDaemon(p.socket, time.Duration(float64(time.Second)**idleTimeout)); err != nil {
+		if err := serveDaemon(p.socket, time.Duration(float64(time.Second)**idleTimeout), juliaAdapter{}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
