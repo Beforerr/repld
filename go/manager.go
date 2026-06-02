@@ -11,8 +11,9 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// SessionManager tracks multiple named Julia sessions.
+// SessionManager tracks multiple named sessions driven by one adapter.
 type SessionManager struct {
+	adapter    Adapter
 	mu         sync.Mutex
 	sessions   map[string]*JuliaSession
 	lastErrors map[string]*juliaEvalError
@@ -20,9 +21,10 @@ type SessionManager struct {
 	logDir     string
 }
 
-func newSessionManager() *SessionManager {
+func newSessionManager(adapter Adapter) *SessionManager {
 	logDir, _ := os.MkdirTemp("", "julia-client-logs-")
 	return &SessionManager{
+		adapter:    adapter,
 		sessions:   make(map[string]*JuliaSession),
 		lastErrors: make(map[string]*juliaEvalError),
 		logDir:     logDir,
@@ -86,7 +88,7 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, jul
 		if projectVal == "" {
 			projectVal = "@."
 		}
-		sess = newJuliaSession(projectVal, newSentinel(), juliaArgs, m.openLogFile(key))
+		sess = newJuliaSession(m.adapter, projectVal, newSentinel(), juliaArgs, m.openLogFile(key))
 		if err := sess.start(juliaExe, cwd); err != nil {
 			return nil, err
 		}

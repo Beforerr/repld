@@ -216,7 +216,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	emit(streamFrame{Done: true})
 }
 
-func serveDaemon(socketPath string, idleTimeout time.Duration) error {
+func serveDaemon(socketPath string, idleTimeout time.Duration, adapter Adapter) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
 		return err
 	}
@@ -232,7 +232,7 @@ func serveDaemon(socketPath string, idleTimeout time.Duration) error {
 	fmt.Fprintf(os.Stderr, "julia-daemon listening on %s\n", socketPath)
 
 	state := &daemonState{
-		manager: newSessionManager(),
+		manager: newSessionManager(adapter),
 		stopCh:  make(chan struct{}),
 	}
 	state.lastRequest.Store(time.Now().UnixNano())

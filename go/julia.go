@@ -36,3 +36,7 @@ func (juliaAdapter) LoadRuntimeStmt(hexSource string) string {
 func (juliaAdapter) WrapEval(hexCode string, printResult bool) string {
 	return fmt.Sprintf(`Main.JuliaClientRuntime.run("%s", %t)`, hexCode, printResult)
 }
+
+func (juliaAdapter) SentinelStmt(sentinel string) string {
+	return fmt.Sprintf(`flush(stderr); println(stderr, "%s"); flush(stderr); println(stdout, "%s"); flush(stdout)`, sentinel, sentinel)
+}

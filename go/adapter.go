@@ -14,4 +14,8 @@ type Adapter interface {
 	RuntimeSource() string
 	LoadRuntimeStmt(hexSource string) string          // statement that loads the hex'd runtime
 	WrapEval(hexCode string, printResult bool) string // runs hex'd code, emits the control frame
+
+	// SentinelStmt prints sentinel to stderr then stdout (flushing each); the
+	// engine uses it as the per-eval drain barrier.
+	SentinelStmt(sentinel string) string
 }

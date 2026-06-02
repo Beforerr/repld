@@ -46,9 +46,9 @@ func newSentinel() string {
 	return fmt.Sprintf("__JULIA_CLIENT_%s__", hex.EncodeToString(b))
 }
 
-func newJuliaSession(projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
+func newJuliaSession(adapter Adapter, projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
 	return &JuliaSession{
-		adapter:    juliaAdapter{},
+		adapter:    adapter,
 		projectVal: projectVal,
 		sentinel:   sentinel,
 		juliaArgs:  juliaArgs,
@@ -122,8 +122,8 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	defer ln.Close()
 	token := newSentinel()
 	cmd.Env = append(os.Environ(),
-		"JULIA_CLIENT_CONTROL_ADDR="+ln.Addr().String(),
-		"JULIA_CLIENT_CONTROL_TOKEN="+token,
+		"REPLD_CONTROL_ADDR="+ln.Addr().String(),
+		"REPLD_CONTROL_TOKEN="+token,
 	)
 
 	if err := cmd.Start(); err != nil {
@@ -212,10 +212,8 @@ func decodeHexString(s string) (string, error) {
 	return string(b), nil
 }
 
-// parseControlLine decodes one control frame from fd 3. The runtime writes
-// exactly one per eval: "OK" on success, or "ERR <hex short> <hex smart>
-// <hex full>" on a Julia error. A malformed or empty line degrades to "no
-// structured error" rather than failing the eval.
+// parseControlLine decodes one control frame: "OK", or "ERR <hex short> <hex
+// smart> <hex full>". Malformed/empty degrades to no structured error.
 func parseControlLine(line string) *juliaEvalError {
 	line = strings.TrimRight(line, "\r\n")
 	rest, ok := strings.CutPrefix(line, "ERR ")
@@ -292,11 +290,7 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 		}
 	}
 
-	sentinelCmd := fmt.Sprintf(
-		"flush(stderr); println(stderr, \"%s\"); flush(stderr); println(stdout, \"%s\"); flush(stdout)\n",
-		s.sentinel, s.sentinel,
-	)
-	if _, err := io.WriteString(s.stdin, code+"\n"+sentinelCmd); err != nil {
+	if _, err := io.WriteString(s.stdin, code+"\n"+s.adapter.SentinelStmt(s.sentinel)+"\n"); err != nil {
 		return nil, err
 	}
 

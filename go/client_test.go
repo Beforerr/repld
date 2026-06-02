@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 
 func newTestState() *daemonState {
 	s := &daemonState{
-		manager: newSessionManager(),
+		manager: newSessionManager(juliaAdapter{}),
 		stopCh:  make(chan struct{}),
 	}
 	s.lastRequest.Store(time.Now().UnixNano())
@@ -69,9 +69,9 @@ func TestHandleRequest_Stop(t *testing.T) {
 
 func TestHandleRequest_SessionsShowsRouteAndProject(t *testing.T) {
 	state := newTestState()
-	projectSession := newJuliaSession("@temp", "sentinel", nil, nil)
-	namedSession := newJuliaSession("@temp", "sentinel", []string{"+1.12", "--startup-file=no"}, nil)
-	deadSession := newJuliaSession("@shareAnyname", "sentinel", nil, nil)
+	projectSession := newJuliaSession(juliaAdapter{}, "@temp", "sentinel", nil, nil)
+	namedSession := newJuliaSession(juliaAdapter{}, "@temp", "sentinel", []string{"+1.12", "--startup-file=no"}, nil)
+	deadSession := newJuliaSession(juliaAdapter{}, "@shareAnyname", "sentinel", nil, nil)
 	deadSession.dead.Store(true)
 	state.manager.sessions["@temp"] = projectSession
 	state.manager.sessions["~temp"] = namedSession
@@ -145,7 +145,7 @@ func TestNormalizeProjectArgPreservesJuliaSelectors(t *testing.T) {
 }
 
 func TestSessionManagerKeyPreservesJuliaProjectSelectors(t *testing.T) {
-	manager := newSessionManager()
+	manager := newSessionManager(juliaAdapter{})
 	defer manager.shutdown()
 
 	cwd := t.TempDir()
@@ -176,7 +176,7 @@ func startTestDaemon(t *testing.T) (socketPath string, stop func(), wg *sync.Wai
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		errCh <- serveDaemon(socketPath, time.Hour)
+		errCh <- serveDaemon(socketPath, time.Hour, juliaAdapter{})
 	}()
 	waitForSocket(t, socketPath, errCh)
 	stop = func() {
@@ -720,7 +720,7 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 func TestKillRunsAtexitHooks(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
-	sess := newJuliaSession(cwd, newSentinel(), nil, nil)
+	sess := newJuliaSession(juliaAdapter{}, cwd, newSentinel(), nil, nil)
 	require.NoError(t, sess.start("", cwd))
 
 	marker := filepath.Join(t.TempDir(), "atexit.marker")
