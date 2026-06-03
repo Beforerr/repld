@@ -1,32 +1,35 @@
 install:
-    -julia-client stop
-    go build -C go -o ~/.local/bin/julia-client .
+    -repld stop
+    go build -C go -o ~/.local/bin/repld .
     npx skills add . -g -y
 
 test:
     go test -C go -v -timeout 300s
 
+test-fast:
+    go test -C go -run 'Test(Parse|Handle|SessionManager|ExecuteRaw|InterruptUnknown)' -count=1
+
 bench-startup runs="5":
     #!/usr/bin/env bash
     set -euo pipefail
-    bin=julia-client
-    socket="$(mktemp -t julia-client-bench.XXXXXX.sock)"
+    bin=repld
+    socket="$(mktemp -t repld-bench.XXXXXX.sock)"
     rm -f "$socket"
     cleanup() {
         "$bin" --socket "$socket" stop >/dev/null 2>&1 || true
-        rm -f "$bin" "$socket"
+        rm -f "$socket"
     }
     trap cleanup EXIT
-    "$bin" --socket "$socket" -e 'println(1)' >/dev/null
+    "$bin" --socket "$socket" julia -e 'println(1)' >/dev/null
 
     hyperfine --runs {{ runs }} \
         --command-name "cold startup + first eval" \
         --prepare "'$bin' --socket '$socket' stop >/dev/null 2>&1 || true; rm -f '$socket'" \
-        "'$bin' --socket '$socket' -e 'println(1)' >/dev/null"
+        "'$bin' --socket '$socket' julia -e 'println(1)' >/dev/null"
 
     hyperfine --runs {{ runs }} --warmup 1 --shell=none \
         --command-name "warm eval" \
-        "'$bin' --socket '$socket' -e 'println(1)' >/dev/null"
+        "'$bin' --socket '$socket' julia -e 'println(1)' >/dev/null"
 
 release version="":
     #!/usr/bin/env bash

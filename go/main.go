@@ -1,8 +1,9 @@
-// julia-client: CLI for interacting with the julia-daemon persistent REPL.
+// repld: CLI + daemon for persistent REPL sessions across interpreters.
 package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,14 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
-var defaultSocket = filepath.Join(os.Getenv("HOME"), ".local", "share", "julia-client", "julia-daemon.sock")
+var defaultSocket = defaultSocketPath()
 
 func startDaemon(socketPath string) {
-	// Re-exec ourselves with the daemon subcommand — no external dependency.
 	self, err := os.Executable()
 	if err != nil {
 		self = os.Args[0]
@@ -37,14 +38,14 @@ func connect(socketPath string, startIfNeeded bool) (net.Conn, error) {
 			return conn, nil
 		}
 		if !startIfNeeded {
-			return nil, fmt.Errorf("julia-daemon is not running (no socket at %s)", socketPath)
+			return nil, fmt.Errorf("repld daemon is not running (no socket at %s)", socketPath)
 		}
 		if attempt == 0 {
 			startDaemon(socketPath)
 		}
 		time.Sleep(600 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("could not connect to julia-daemon at %s after startup — try running 'julia-client daemon' manually to see errors", socketPath)
+	return nil, fmt.Errorf("could not connect to repld daemon at %s after startup — try running 'repld daemon' to see errors", socketPath)
 }
 
 type response struct {
@@ -53,16 +54,17 @@ type response struct {
 }
 
 type protocolRequest struct {
-	Action      string   `json:"action"`
-	Code        string   `json:"code,omitempty"`
-	Cwd         string   `json:"cwd,omitempty"`
-	Project     string   `json:"project,omitempty"`
-	Session     string   `json:"session,omitempty"`
-	JuliaArgs   []string `json:"julia_args,omitempty"` // extra switches forwarded to the julia subprocess
-	JuliaExe    string   `json:"julia_exe,omitempty"`  // custom Julia binary path
-	PrintResult bool     `json:"print_result,omitempty"`
-	Fresh       bool     `json:"fresh,omitempty"`
-	TraceLevel  string   `json:"trace_level,omitempty"`
+	Action          string   `json:"action"`
+	Lang            string   `json:"lang,omitempty"` // selects the adapter (julia, python)
+	Code            string   `json:"code,omitempty"`
+	Cwd             string   `json:"cwd,omitempty"`
+	Session         string   `json:"session,omitempty"`
+	Args            []string `json:"args,omitempty"` // switches forwarded to the interpreter
+	Exe             string   `json:"exe,omitempty"`  // interpreter path
+	PrintResult     bool     `json:"print_result,omitempty"`
+	Fresh           bool     `json:"fresh,omitempty"`
+	TraceLevel      string   `json:"trace_level,omitempty"`
+	RequireExisting bool     `json:"require_existing,omitempty"`
 }
 
 type streamFrame struct {
@@ -139,15 +141,7 @@ func mustGetwd() string {
 	return cwd
 }
 
-func normalizeProjectArg(project string) string {
-	if project == "" || strings.HasPrefix(project, "@") {
-		return project
-	}
-	projectArg, _ := filepath.Abs(project)
-	return projectArg
-}
-
-func cmdEval(socketPath, code, project, session, juliaExe string, printResult, fresh bool, traceLevel string, juliaArgs []string) {
+func cmdEval(socketPath, lang, code, exe, session string, printResult, fresh bool, traceLevel string, args []string) {
 	if code == "-" {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -157,84 +151,71 @@ func cmdEval(socketPath, code, project, session, juliaExe string, printResult, f
 		code = string(b)
 	}
 	req := protocolRequest{
-		Action:      "eval",
-		Code:        code,
-		Cwd:         mustGetwd(),
-		Project:     normalizeProjectArg(project),
-		Session:     session,
-		JuliaExe:    juliaExe,
-		TraceLevel:  traceLevel,
-		JuliaArgs:   juliaArgs,
-		PrintResult: printResult,
-		Fresh:       fresh,
+		Action:          "eval",
+		Lang:            lang,
+		Code:            code,
+		Cwd:             mustGetwd(),
+		Session:         session,
+		Exe:             exe,
+		TraceLevel:      traceLevel,
+		Args:            args,
+		PrintResult:     printResult,
+		Fresh:           fresh,
+		RequireExisting: lang == "" && exe == "" && session != "",
 	}
 	run(socketPath, req, true)
 }
 
-func cmdInterrupt(socketPath, project, session string) {
+func cmdInterrupt(socketPath, lang, exe, session string, fwd []string) {
 	run(socketPath, protocolRequest{
 		Action:  "interrupt",
+		Lang:    lang,
+		Exe:     exe,
 		Cwd:     mustGetwd(),
-		Project: normalizeProjectArg(project),
 		Session: session,
+		Args:    fwd, // carries --project so the daemon keys the right session
 	}, false)
 }
 
-func cmdTrace(socketPath, project, session, traceLevel string) {
-	if traceLevel == "" {
-		traceLevel = "full"
-	}
+func cmdTrace(socketPath, lang, exe, session, traceLevel string, fwd []string) {
+	traceLevel = cmp.Or(traceLevel, "full")
 	run(socketPath, protocolRequest{
 		Action:     "trace",
+		Lang:       lang,
+		Exe:        exe,
 		Cwd:        mustGetwd(),
-		Project:    normalizeProjectArg(project),
 		Session:    session,
 		TraceLevel: traceLevel,
+		Args:       fwd,
 	}, false)
-}
-
-// first returns the first non-empty string.
-func first(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `julia-client: Julia REPL client
+	fmt.Fprintf(os.Stderr, `repld: persistent REPL daemon for multiple interpreters
 
 Usage:
-  julia-client [switches] -- [programfile] [args...]
-  julia-client [--socket PATH] <command> [options]
+  repld <exe> [interp-args] (--<eval> CODE | <file> | -)
+  repld <command> [<exe>] [--session L]   # target a session: trace, interrupt
+  repld <command>                       # daemon-wide: sessions, stop, daemon
 
-Any flag julia-client doesn't recognize is forwarded verbatim to the Julia
-subprocess when a session is created, e.g. --startup-file=no, -L init.jl,
-+1.11 (juliaup channel, must come first).
+<exe> is the interpreter to run (julia, python3, .venv/bin/python, /path/...).
+The language is inferred from its name, or set with --lang. 
+repld's own flags must come before <exe>; after it, every flag forwards verbatim to the
+interpreter except its eval flag (-e/-E for julia, -c for python), which repld captures.
 
-Eval flags:
-  -e, --eval CODE      Evaluate Julia code (omit or use - to read stdin)
-  -E, --print CODE     Evaluate Julia code and display the result
-  --project PROJECT    Julia project directory or selector (passed as --project to Julia)
-  --session LABEL      Named session to create or reuse across directories
+repld flags:
+  --lang LANG          Force the language (julia, python) when the exe is ambiguous
+  --session LABEL      Named session, reusable without re-specifying the exe
   --fresh              Clear the targeted session before evaluating
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)
-  -t, --threads N      JULIA_NUM_THREADS for a newly created session (e.g. 4 or auto)
 
-Session routing (priority order):
-  --session LABEL      Shared by label, regardless of directory
-  --project PROJECT    Keyed by project path or selector
-  (default)            Keyed by current working directory; Julia uses --project=@.
-
-Commands:
-  sessions             List active Julia sessions
-  trace                Print the last saved Julia error traceback for this session
+Commands (trace/interrupt take an optional [exe] and/or --session to locate the session):
+  sessions             List active sessions (all languages)
+  trace                Print the last saved error traceback for the session
   interrupt            Interrupt the in-flight eval (SIGKILL after 3s if unresponsive)
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
-    --idle-timeout SECS  Shut down after idle (default: 3600)
+    --idle-timeout SECS  Shut down after idle (default: 0 = never; use 'stop')
 
 Global flags:
   --socket PATH        Unix socket path (default: %s)
@@ -246,127 +227,190 @@ var subcommands = map[string]bool{
 	"sessions": true, "trace": true, "interrupt": true, "stop": true, "daemon": true,
 }
 
-// parsed is the result of scanning the command line: julia-client's own flags,
-// the eval mode/code, any leading subcommand, and everything else collected as
-// passthrough switches for the Julia subprocess.
+// parsed is the result of scanning the command line: repld's own flags, the
+// optional leading exe, the eval mode/code, any subcommand, and everything else
+// collected as passthrough switches for the interpreter.
 type parsed struct {
-	socket    string
-	juliaExe  string
-	project   string
-	session   string
-	trace     string
-	threads   string
-	fresh     bool
-	evalMode  string // "", "eval", or "print"
-	code      string
-	files     []string // bare positionals (file candidates)
-	juliaArgs []string // forwarded to the subprocess
-	sub       string   // leading subcommand, "" if none
-	subArgs   []string // tokens after the subcommand
+	socket   string
+	exe      string // leading interpreter positional
+	lang     string // --lang override
+	session  string
+	trace    string
+	fresh    bool
+	evalMode string // "", "eval", or "print"
+	code     string
+	fwd      []string // forwarded to the interpreter (flags, program file, args)
+	sub      string   // leading subcommand, "" if none
+	subArgs  []string // tokens after the subcommand
 }
 
-// parseArgs consumes julia-client's own flags wherever they appear and forwards
-// every other token — unknown flags and their values alike — to juliaArgs. It
-// never needs to know Julia's flag arities: a bare token after a forwarded flag
-// is forwarded too, so `-L init.jl` survives intact. A bare token before any
-// passthrough is a subcommand (only as the first positional) or a file.
 func parseArgs(args []string) parsed {
-	// Canonical name (dashes/value stripped) -> setter on p.
-	value := map[string]func(*parsed, string){
-		"e":      func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
-		"eval":   func(p *parsed, v string) { p.evalMode, p.code = "eval", v },
-		"E":      func(p *parsed, v string) { p.evalMode, p.code = "print", v },
-		"print":  func(p *parsed, v string) { p.evalMode, p.code = "print", v },
-		"socket": func(p *parsed, v string) { p.socket = v },
-
-		"project": func(p *parsed, v string) { p.project = v },
-		"session": func(p *parsed, v string) { p.session = v },
-		"trace":   func(p *parsed, v string) { p.trace = v },
-		"t":       func(p *parsed, v string) { p.threads = v },
-		"threads": func(p *parsed, v string) { p.threads = v },
+	p := parsed{socket: defaultSocket}
+	repld := map[string]*string{
+		"socket": &p.socket, "lang": &p.lang, "session": &p.session, "trace": &p.trace,
+	}
+	// evalModeFor reports the eval mode ("eval"/"print") a flag name
+	evalModeFor := func(name string) string {
+		evalNames, printNames := evalPrintFlags(resolveLang(p))
+		if slices.Contains(evalNames, name) {
+			return "eval"
+		}
+		if slices.Contains(printNames, name) {
+			return "print"
+		}
+		return ""
 	}
 
-	p := parsed{socket: defaultSocket, project: "@."}
 	for i := 0; i < len(args); {
 		t := args[i]
 		if strings.HasPrefix(t, "-") {
 			name, inline, hasEq := strings.Cut(strings.TrimLeft(t, "-"), "=")
-			if set, ok := value[name]; ok {
-				if hasEq {
-					set(&p, inline)
+			dst, isRepld := repld[name]
+			mode := evalModeFor(name)
+			// A flag-with-value: an eval flag (any position) or a repld flag (pre-exe).
+			if mode != "" || (isRepld && p.exe == "") {
+				val := inline
+				if !hasEq {
+					if i+1 >= len(args) {
+						fmt.Fprintf(os.Stderr, "missing value for %s\n", t)
+						usage()
+					}
+					val = args[i+1]
 					i++
-				} else if i+1 < len(args) {
-					set(&p, args[i+1])
-					i += 2
-				} else {
-					fmt.Fprintf(os.Stderr, "missing value for %s\n", t)
-					usage()
 				}
+				if mode != "" {
+					p.evalMode, p.code = mode, val
+				} else {
+					*dst = val
+				}
+				i++
 				continue
 			}
-			if name == "fresh" {
+			if name == "fresh" && p.exe == "" {
 				p.fresh = true
 				i++
 				continue
 			}
-			p.juliaArgs = append(p.juliaArgs, t) // unknown flag -> forward
+			p.fwd = append(p.fwd, t)
 			i++
 			continue
 		}
-		// Non-flag token. A leading subcommand wins only before anything else.
-		if t[0] != '+' && p.sub == "" && p.evalMode == "" && len(p.juliaArgs) == 0 && len(p.files) == 0 && subcommands[t] {
+		if p.exe == "" && p.evalMode == "" && p.sub == "" && len(p.fwd) == 0 && !subcommands[t] {
+			p.exe = t
+		} else if p.sub == "" && p.evalMode == "" && len(p.fwd) == 0 && subcommands[t] {
 			p.sub, p.subArgs = t, args[i+1:]
 			break
-		}
-		// A juliaup channel, or a value for a preceding forwarded flag, forwards;
-		// an otherwise-standalone bare token is a file candidate.
-		if t[0] == '+' || len(p.juliaArgs) > 0 {
-			p.juliaArgs = append(p.juliaArgs, t)
 		} else {
-			p.files = append(p.files, t)
+			p.fwd = append(p.fwd, t)
 		}
 		i++
 	}
 	return p
 }
 
+func resolveLang(p parsed) string {
+	return cmp.Or(p.lang, langForExe(p.exe))
+}
+
+func resolveExeStr(exe, lang string) string {
+	if exe == "" {
+		if lc, ok := langs[lang]; ok {
+			exe = lc.adapter.DefaultExe()
+		}
+	}
+	return absExe(exe)
+}
+
+// subTarget locates an existing session for a verb-first subcommand:
+// repld trace/interrupt [exe] [--session L] [interp-flags].
+type subTarget struct {
+	exe, lang, session, level string
+	fwd                       []string
+}
+
+func parseTarget(p parsed) subTarget {
+	tg := subTarget{lang: p.lang, session: p.session, level: cmp.Or(p.trace, "full")}
+	a := p.subArgs
+	for i := 0; i < len(a); i++ {
+		s := a[i]
+		if !strings.HasPrefix(s, "-") {
+			if tg.exe == "" && s != "" {
+				tg.exe = s // leading positional = interpreter (locator)
+			} else {
+				tg.fwd = append(tg.fwd, s)
+			}
+			continue
+		}
+		name, inline, hasEq := strings.Cut(strings.TrimLeft(s, "-"), "=")
+		val := func() string {
+			if hasEq {
+				return inline
+			}
+			if i+1 < len(a) {
+				i++
+				return a[i]
+			}
+			return ""
+		}
+		switch name {
+		case "session":
+			tg.session = val()
+		case "lang":
+			tg.lang = val()
+		case "trace":
+			tg.level = val()
+		default:
+			tg.fwd = append(tg.fwd, s) // interpreter flag (e.g. --project) → locator disc
+		}
+	}
+	tg.lang = cmp.Or(tg.lang, langForExe(tg.exe))
+	return tg
+}
+
+func absExe(exe string) string {
+	if exe == "" || filepath.IsAbs(exe) {
+		return exe
+	}
+	if strings.ContainsRune(exe, os.PathSeparator) || strings.HasPrefix(exe, ".") {
+		if a, err := filepath.Abs(exe); err == nil {
+			return a
+		}
+	}
+	return exe
+}
+
 func main() {
 	p := parseArgs(os.Args[1:])
+
+	lang := resolveLang(p)
 
 	if p.sub != "" {
 		dispatchSubcommand(p)
 		return
 	}
 
-	// Normalize the thread count into a forwarded -t switch: explicit flag beats
-	// an inherited JULIA_NUM_THREADS. Forwarding (rather than inheriting the env)
-	// is what makes it effective per-session over the daemon's frozen environment.
-	juliaArgs := p.juliaArgs
-	if t := first(p.threads, os.Getenv("JULIA_NUM_THREADS")); t != "" {
-		juliaArgs = append(juliaArgs, "-t", t)
+	// An exe (hence a known lang) is required to create session
+	if lang == "" && p.session == "" {
+		fmt.Fprintln(os.Stderr, "no interpreter: use `repld <exe> ...`, --lang, or --session LABEL for an existing session")
+		usage()
 	}
-
-	// JULIA_EXE selects the Julia binary; empty means look up "julia" in PATH.
-	juliaExe := os.Getenv("JULIA_EXE")
+	exe := resolveExeStr(p.exe, lang) // relative path (e.g. .venv/bin/python) → abs against cwd; bare name unchanged
 
 	switch {
 	case p.evalMode != "":
-		cmdEval(p.socket, p.code, p.project, p.session, juliaExe, p.evalMode == "print", p.fresh, p.trace, juliaArgs)
-	case len(p.files) > 0:
-		f := p.files[0]
-		if _, err := os.Stat(f); err != nil {
-			fmt.Fprintf(os.Stderr, "unknown command: %s\n", f)
-			usage()
-		}
-		code := fmt.Sprintf("cd(%q) do; Base.include(Main, %q); end", mustGetwd(), f)
-		cmdEval(p.socket, code, p.project, p.session, juliaExe, false, p.fresh, p.trace, juliaArgs)
+		cmdEval(p.socket, lang, p.code, exe, p.session, p.evalMode == "print", p.fresh, p.trace, p.fwd)
+	case len(p.fwd) > 0:
+		// Forwarded tokens (a program file and/or interpreter flags/args) run at
+		// session launch, exactly as the interpreter would handle them. No code
+		// to eval; the launch output is streamed back.
+		cmdEval(p.socket, lang, "", exe, p.session, false, p.fresh, p.trace, p.fwd)
 	default:
-		// No code given: read stdin only if it's a pipe/redirect, not a terminal.
+		// No args/code: read stdin only if piped.
 		fi, err := os.Stdin.Stat()
 		if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
 			usage()
 		}
-		cmdEval(p.socket, "-", p.project, p.session, juliaExe, false, p.fresh, p.trace, juliaArgs)
+		cmdEval(p.socket, lang, "-", exe, p.session, false, p.fresh, p.trace, p.fwd)
 	}
 }
 
@@ -377,23 +421,16 @@ func dispatchSubcommand(p parsed) {
 	case "stop":
 		run(p.socket, protocolRequest{Action: "stop"}, false)
 	case "trace":
-		fs := flag.NewFlagSet("trace", flag.ExitOnError)
-		level := fs.String("trace", first(p.trace, "full"), "Error traceback level: short, smart, or full")
-		project := fs.String("project", p.project, "Julia project directory")
-		session := fs.String("session", p.session, "Named session label")
-		fs.Parse(p.subArgs)
-		cmdTrace(p.socket, *project, *session, *level)
+		tg := parseTarget(p)
+		cmdTrace(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.level, tg.fwd)
 	case "interrupt":
-		fs := flag.NewFlagSet("interrupt", flag.ExitOnError)
-		project := fs.String("project", p.project, "Julia project directory")
-		session := fs.String("session", p.session, "Named session label")
-		fs.Parse(p.subArgs)
-		cmdInterrupt(p.socket, *project, *session)
+		tg := parseTarget(p)
+		cmdInterrupt(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.fwd)
 	case "daemon":
 		fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-		idleTimeout := fs.Float64("idle-timeout", 60*60, "Idle timeout in seconds")
+		idleTimeout := fs.Float64("idle-timeout", 0, "Shut down after this many idle seconds (0 = never)")
 		fs.Parse(p.subArgs)
-		if err := serveDaemon(p.socket, time.Duration(float64(time.Second)**idleTimeout), juliaAdapter{}); err != nil {
+		if err := serveDaemon(p.socket, time.Duration(float64(time.Second)**idleTimeout)); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

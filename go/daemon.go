@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -27,30 +28,30 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 
 	switch req.Action {
 	case "trace":
-		err := state.manager.lastError(req.Session, req.Project, req.Cwd)
+		err := state.manager.lastError(req.Lang, req.Session, req.Cwd, discFor(req))
 		if err == nil {
-			return errResp("No saved Julia traceback for this session.")
+			return errResp("No saved traceback for this session.")
 		}
 		return response{Output: formatTraceOutput(err, req.TraceLevel)}
 
 	case "sessions":
 		sessions := state.manager.list()
 		if len(sessions) == 0 {
-			return response{Output: "No active Julia sessions."}
+			return response{Output: "No active sessions."}
 		}
 		sort.Slice(sessions, func(i, j int) bool {
-			return sessions[i].key < sessions[j].key
+			return sessions[i].lang+sessions[i].label < sessions[j].lang+sessions[j].label
 		})
-		lines := []string{"Active Julia sessions:"}
+		lines := []string{"Active sessions:"}
 		for _, s := range sessions {
-			label := s.key
+			label := s.label
 			if strings.HasPrefix(label, "~") {
 				label = "session " + strings.TrimPrefix(label, "~")
 			} else {
-				label = "project " + label
+				label = "dir " + label
 			}
-			line := "  " + label
-			if s.project != "" && s.project != s.key {
+			line := fmt.Sprintf("  [%s] %s", s.lang, label)
+			if s.project != "" {
 				line += " project=" + s.project
 			}
 			if !s.alive {
@@ -58,8 +59,8 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 			} else if s.busyFor > 0 {
 				line += fmt.Sprintf(" busy=%.1fs", s.busyFor.Seconds())
 			}
-			if len(s.juliaArgs) > 0 {
-				line += " julia_args=" + strings.Join(s.juliaArgs, " ")
+			if len(s.args) > 0 {
+				line += " args=" + strings.Join(s.args, " ")
 			}
 			if s.logFile != "" {
 				line += " log=" + s.logFile
@@ -69,7 +70,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		return response{Output: strings.Join(lines, "\n")}
 
 	case "interrupt":
-		msg, err := state.manager.interrupt(req.Session, req.Project, req.Cwd, 3.0)
+		msg, err := state.manager.interrupt(req.Lang, req.Session, req.Cwd, discFor(req), 3.0)
 		if err != nil {
 			return errResp(err.Error())
 		}
@@ -91,6 +92,15 @@ func errResp(msg string) response {
 	return response{Error: msg}
 }
 
+// discFor is the session's environment discriminant, or "" when the language is
+// unknown (label-only reuse, where the discriminant isn't part of the key).
+func discFor(req protocolRequest) string {
+	if a := adapterFor(req.Lang); a != nil {
+		return a.SessionKey(req.Exe, req.Args)
+	}
+	return ""
+}
+
 func normalizedTraceLevel(level string) string {
 	switch strings.ToLower(level) {
 	case "short", "compact":
@@ -104,28 +114,26 @@ func normalizedTraceLevel(level string) string {
 	}
 }
 
-func formatJuliaError(err *juliaEvalError, level string) string {
+func formatError(err *evalError, level string) string {
 	traceHint := strings.TrimSpace(err.smart) != strings.TrimSpace(err.short)
 	switch normalizedTraceLevel(level) {
 	case "short":
 		if !traceHint {
 			return err.short
 		}
-		return err.short + "\n\nTrace saved: run `julia-client trace --trace [smart|full]` to inspect"
+		return err.short + "\n\nTrace saved: run `trace --trace [smart|full]` to inspect"
 	case "full":
 		return err.full
 	default:
 		if !traceHint {
 			return err.short
 		}
-		return err.smart + "Trace saved: run `julia-client trace` to inspect"
+		return err.smart + "Trace saved: run `trace` to inspect"
 	}
 }
 
-func formatTraceOutput(err *juliaEvalError, level string) string {
-	if level == "" {
-		level = "full"
-	}
+func formatTraceOutput(err *evalError, level string) string {
+	level = cmp.Or(level, "full")
 	switch normalizedTraceLevel(level) {
 	case "short":
 		return err.short + "\n"
@@ -163,27 +171,37 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	enc := json.NewEncoder(conn)
 	emit := func(f streamFrame) { _ = enc.Encode(f) }
 
-	if req.Fresh {
-		state.manager.restart(req.Session, req.Project, req.Cwd)
+	disc := discFor(req)
+	if req.RequireExisting {
+		if req.Fresh || !state.manager.hasLiveSession(req.Lang, req.Session, req.Cwd, disc) {
+			emit(streamFrame{Done: true, Error: "no existing session for label; pass an interpreter or --lang to create one"})
+			return
+		}
 	}
-	sess, err := state.manager.getOrCreate(req.Cwd, req.Project, req.Session, req.JuliaExe, req.JuliaArgs)
+	if req.Fresh {
+		state.manager.restart(req.Lang, req.Session, req.Cwd, disc)
+	}
+	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args)
 	if err != nil {
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return
 	}
+	for _, chunk := range sess.drainStartup() {
+		if chunk.isStderr {
+			emit(streamFrame{Stderr: chunk.data})
+		} else {
+			emit(streamFrame{Chunk: chunk.data})
+		}
+	}
 
-	// Watch for client disconnect. If the client goes away mid-eval (e.g.
-	// `timeout 30 julia-client` kills it), interrupt the session so the
-	// computation stops instead of orphaning and holding the session lock.
-	// The client never writes after its request, so a Read here blocks until
-	// the connection closes.
+	// Interrupt session when client disconnects. (e.g. `timeout 30 repld ...`)
 	evalDone := make(chan struct{})
 	go func() {
 		buf := make([]byte, 256)
 		for {
 			if _, rerr := conn.Read(buf); rerr != nil {
 				select {
-				case <-evalDone: // eval already finished; normal close
+				case <-evalDone:
 				default:
 					sess.interrupt(3.0)
 				}
@@ -203,11 +221,11 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	close(evalDone)
 	if err != nil {
 		if !sess.isAlive() {
-			state.manager.remove(req.Session, req.Project, req.Cwd)
+			state.manager.remove(req.Lang, req.Session, req.Cwd, disc)
 		}
-		if juliaErr, ok := err.(*juliaEvalError); ok {
-			state.manager.recordError(req.Session, req.Project, req.Cwd, juliaErr)
-			emit(streamFrame{Done: true, Error: formatJuliaError(juliaErr, req.TraceLevel)})
+		if evalErr, ok := err.(*evalError); ok {
+			state.manager.recordError(req.Lang, req.Session, req.Cwd, disc, evalErr)
+			emit(streamFrame{Done: true, Error: formatError(evalErr, req.TraceLevel)})
 			return
 		}
 		emit(streamFrame{Done: true, Error: err.Error()})
@@ -216,7 +234,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	emit(streamFrame{Done: true})
 }
 
-func serveDaemon(socketPath string, idleTimeout time.Duration, adapter Adapter) error {
+func serveDaemon(socketPath string, idleTimeout time.Duration) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
 		return err
 	}
@@ -229,27 +247,29 @@ func serveDaemon(socketPath string, idleTimeout time.Duration, adapter Adapter) 
 
 	pidPath := filepath.Join(filepath.Dir(socketPath), "daemon.pid")
 	os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0644)
-	fmt.Fprintf(os.Stderr, "julia-daemon listening on %s\n", socketPath)
+	fmt.Fprintf(os.Stderr, "repld listening on %s\n", socketPath)
 
 	state := &daemonState{
-		manager: newSessionManager(adapter),
+		manager: newSessionManager(),
 		stopCh:  make(chan struct{}),
 	}
 	state.lastRequest.Store(time.Now().UnixNano())
 
 	// Idle watchdog: closes listener when idle or stop requested
 	go func() {
+		defer ln.Close()
+		if idleTimeout <= 0 {
+			<-state.stopCh
+			return
+		}
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-state.stopCh:
-				ln.Close()
 				return
 			case <-ticker.C:
-				idle := time.Since(time.Unix(0, state.lastRequest.Load()))
-				if idle > idleTimeout {
-					ln.Close()
+				if time.Since(time.Unix(0, state.lastRequest.Load())) > idleTimeout {
 					return
 				}
 			}

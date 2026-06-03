@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="Beforerr/julia-client"
-BIN_NAME="julia-client"
+REPO="Beforerr/repld"
+BIN_NAME="repld"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
-# Detect OS and arch
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
@@ -21,7 +20,6 @@ case "$ARCH" in
   *)               echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-# Resolve version
 if [[ -z "${VERSION:-}" ]]; then
   VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"\(.*\)".*/\1/')"
 fi

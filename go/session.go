@@ -19,12 +19,12 @@ import (
 
 const startupTimeout = 120.0
 
-// JuliaSession manages a single persistent interpreter subprocess.
-type JuliaSession struct {
-	adapter    Adapter
-	projectVal string // pre-computed --project= arg (also used for display)
-	sentinel   string
-	juliaArgs  []string // switches forwarded to the subprocess
+// Session manages a single persistent interpreter subprocess.
+type Session struct {
+	adapter  Adapter
+	lang     string // language name, for the sessions listing
+	sentinel string
+	fwd      []string // switches forwarded to the interpreter
 
 	proc        *exec.Cmd
 	stdin       io.WriteCloser
@@ -38,42 +38,43 @@ type JuliaSession struct {
 	dead      atomic.Bool
 	busySince atomic.Int64 // UnixNano of current call start; 0 when idle
 	logFile   *os.File
+	startup   []startupChunk
+}
+
+type startupChunk struct {
+	data     string
+	isStderr bool
 }
 
 func newSentinel() string {
 	b := make([]byte, 16)
 	rand.Read(b)
-	return fmt.Sprintf("__JULIA_CLIENT_%s__", hex.EncodeToString(b))
+	return fmt.Sprintf("__REPLD_%s__", hex.EncodeToString(b))
 }
 
-func newJuliaSession(adapter Adapter, projectVal, sentinel string, juliaArgs []string, logFile *os.File) *JuliaSession {
-	return &JuliaSession{
-		adapter:    adapter,
-		projectVal: projectVal,
-		sentinel:   sentinel,
-		juliaArgs:  juliaArgs,
-		logFile:    logFile,
+func newSession(adapter Adapter, sentinel string, fwd []string, logFile *os.File) *Session {
+	return &Session{
+		adapter:  adapter,
+		sentinel: sentinel,
+		fwd:      fwd,
+		logFile:  logFile,
 	}
 }
 
-func (s *JuliaSession) start(juliaExe string, workDir string) error {
-	var exe string
-	if juliaExe != "" {
-		if filepath.IsAbs(juliaExe) {
-			exe = juliaExe
-		} else {
-			// Relative path: resolved relative to the project directory
-			exe = filepath.Join(s.projectVal, juliaExe)
-		}
-	} else {
-		var err error
-		exe, err = exec.LookPath(s.adapter.DefaultExe())
+func (s *Session) start(exe string, workDir string) error {
+	// exe is an abs-ified path or a bare name looked up in PATH
+	if exe == "" {
+		exe = s.adapter.DefaultExe()
+	}
+	if !filepath.IsAbs(exe) {
+		resolved, err := exec.LookPath(exe)
 		if err != nil {
-			return fmt.Errorf("'%s' not found in PATH", s.adapter.DefaultExe())
+			return fmt.Errorf("'%s' not found in PATH", exe)
 		}
+		exe = resolved
 	}
 
-	args := s.adapter.LaunchArgs(s.projectVal, s.juliaArgs)
+	args := s.adapter.LaunchArgs(s.fwd)
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = workDir
 
@@ -112,8 +113,7 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 	// Control channel: a loopback socket the runtime dials back on, carrying
 	// framed eval status (child→parent) and interrupt bytes (parent→child) out
 	// of band from user stdout/stderr. A socket rather than inherited fds
-	// because exec.Cmd.ExtraFiles is unsupported on Windows; the token rejects
-	// any other local process that races to the ephemeral port first.
+	// keeps the protocol portable to Windows.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		closeAll()
@@ -154,16 +154,35 @@ func (s *JuliaSession) start(juliaExe string, workDir string) error {
 		}
 	}()
 
-	// Wait for Julia's interactive prompt to appear
-	if _, err := s.executeRaw("", nil, false, startupTimeout); err != nil {
-		return fmt.Errorf("Julia startup failed: %w", err)
+	// Capture all startup output (a forwarded program file runs here, before the
+	// runtime loads) so it can be streamed to the first client.
+	var startup []startupChunk
+	capture := func(data string, isStderr bool) {
+		if s.lang == "python" && isStderr {
+			data = stripPythonPrompts(data)
+			if data == "" {
+				return
+			}
+		}
+		startup = append(startup, startupChunk{data: data, isStderr: isStderr})
 	}
+	if _, err := s.executeRaw("", capture, false, startupTimeout); err != nil {
+		return fmt.Errorf("interpreter startup failed: %w", err)
+	}
+	s.startup = startup
 	runtimeHex := hex.EncodeToString([]byte(s.adapter.RuntimeSource()))
 	if _, err := s.executeRaw(s.adapter.LoadRuntimeStmt(runtimeHex), nil, false, startupTimeout); err != nil {
 		return fmt.Errorf("failed to load runtime: %w", err)
 	}
 	<-controlReady // control is established (or degraded) before the first eval
 	return nil
+}
+
+func stripPythonPrompts(data string) string {
+	for strings.HasSuffix(data, ">>> ") || strings.HasSuffix(data, "... ") {
+		data = data[:len(data)-4]
+	}
+	return data
 }
 
 // acceptControl waits for the child to dial back on ln and present the shared
@@ -190,17 +209,23 @@ func acceptControl(ln net.Listener, token string, timeoutSecs float64) (net.Conn
 	return conn, br
 }
 
-func (s *JuliaSession) isAlive() bool {
+func (s *Session) isAlive() bool {
 	return !s.dead.Load()
 }
 
-type juliaEvalError struct {
+func (s *Session) drainStartup() []startupChunk {
+	chunks := s.startup
+	s.startup = nil
+	return chunks
+}
+
+type evalError struct {
 	short string
 	smart string
 	full  string
 }
 
-func (e *juliaEvalError) Error() string {
+func (e *evalError) Error() string {
 	return e.short
 }
 
@@ -214,7 +239,7 @@ func decodeHexString(s string) (string, error) {
 
 // parseControlLine decodes one control frame: "OK", or "ERR <hex short> <hex
 // smart> <hex full>". Malformed/empty degrades to no structured error.
-func parseControlLine(line string) *juliaEvalError {
+func parseControlLine(line string) *evalError {
 	line = strings.TrimRight(line, "\r\n")
 	rest, ok := strings.CutPrefix(line, "ERR ")
 	if !ok {
@@ -230,14 +255,14 @@ func parseControlLine(line string) *juliaEvalError {
 	if e1 != nil || e2 != nil || e3 != nil {
 		return nil
 	}
-	return &juliaEvalError{short: short, smart: smart, full: full}
+	return &evalError{short: short, smart: smart, full: full}
 }
 
 // scanToSentinel relays r line by line to emit until a line ending in the
 // sentinel (the drain barrier), then returns. On EOF/error before the sentinel
 // it returns that error. It keeps a bounded tail of recent output for the
 // caller's "died during execution" diagnostic.
-func (s *JuliaSession) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(string, bool)) (tail string, err error) {
+func (s *Session) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(string, bool)) (tail string, err error) {
 	const maxTail = 64 * 1024
 	var buf []byte
 	keep := func(s string) {
@@ -272,9 +297,13 @@ func (s *JuliaSession) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(
 // via onChunk until both sentinels arrive (the drain barrier), and — when
 // expectControl is set — reads one framed status/error from fd 3. User output
 // is streamed, never retained; only a bounded tail is kept for the
-// "died during execution" diagnostic. Returns the eval's Julia error (nil on
+// "died during execution" diagnostic. Returns the eval's error (nil on
 // success or when no control frame is expected) and an infra error.
-func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStderr bool), expectControl bool, timeoutSecs float64) (*juliaEvalError, error) {
+func (s *Session) executeRaw(code string, onChunk func(data string, isStderr bool), expectControl bool, timeoutSecs float64) (*evalError, error) {
+	if expectControl && s.control == nil {
+		return nil, fmt.Errorf("control channel unavailable")
+	}
+
 	// stdout and stderr are read by separate goroutines below, but the
 	// consumer (daemon JSON encoder, session log) is not safe for concurrent
 	// writes. Serialize delivery so each chunk is emitted atomically; this also
@@ -299,16 +328,21 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 		tail, err := s.scanToSentinel(s.stdout, false, emit)
 		if err != nil {
 			s.dead.Store(true)
-			outCh <- fmt.Errorf("Julia process died during execution.\nOutput before death:\n%s", tail)
+			outCh <- fmt.Errorf("interpreter process died during execution.\nOutput before death:\n%s", tail)
 			return
 		}
 		outCh <- nil
 	}()
 
-	errCh := make(chan error, 1)
+	type scanResult struct {
+		tail string
+		err  error
+	}
+
+	errCh := make(chan scanResult, 1)
 	go func() {
-		_, err := s.scanToSentinel(s.stderr, true, emit)
-		errCh <- err // nil at sentinel; EOF surfaced so caller can act
+		tail, err := s.scanToSentinel(s.stderr, true, emit)
+		errCh <- scanResult{tail: tail, err: err}
 	}()
 
 	// Drain the control channel concurrently. The runtime flushes the frame
@@ -316,7 +350,7 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 	// buffer, so we must read it as it's written rather than after the sentinel
 	// (which would deadlock). Buffered so the goroutine never leaks if the
 	// process dies and we return early.
-	ctrlCh := make(chan *juliaEvalError, 1)
+	ctrlCh := make(chan *evalError, 1)
 	if expectControl {
 		go func() {
 			line, err := s.control.ReadString('\n')
@@ -328,10 +362,13 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 		}()
 	}
 
-	wait := func() (*juliaEvalError, error) {
+	wait := func() (*evalError, error) {
 		outErr := <-outCh
-		<-errCh // stderr reader sees sentinel after stdout's; ignore its terminal err here
+		errResult := <-errCh
 		if outErr != nil {
+			if strings.TrimSpace(errResult.tail) != "" {
+				return nil, fmt.Errorf("%w\nStderr before death:\n%s", outErr, errResult.tail)
+			}
 			return nil, outErr
 		}
 		if expectControl {
@@ -348,7 +385,7 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 	defer timer.Stop()
 
 	type rawResult struct {
-		evalErr *juliaEvalError
+		evalErr *evalError
 		err     error
 	}
 	doneCh := make(chan rawResult, 1)
@@ -369,12 +406,12 @@ func (s *JuliaSession) executeRaw(code string, onChunk func(data string, isStder
 	}
 }
 
-func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data string, isStderr bool)) error {
+func (s *Session) execute(code string, printResult bool, onChunk func(data string, isStderr bool)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.dead.Load() {
-		return fmt.Errorf("Julia session has died unexpectedly")
+		return fmt.Errorf("session has died unexpectedly")
 	}
 
 	hexCode := hex.EncodeToString([]byte(code))
@@ -386,7 +423,7 @@ func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data 
 	// tagged for machine consumers; the log is the human-readable record.)
 	sink := onChunk
 	if s.logFile != nil {
-		fmt.Fprintf(s.logFile, "[%s] julia> %s\n", time.Now().Format("15:04:05"), code)
+		fmt.Fprintf(s.logFile, "[%s] %s> %s\n", time.Now().Format("15:04:05"), s.lang, code)
 		sink = func(data string, isStderr bool) {
 			io.WriteString(s.logFile, data)
 			if onChunk != nil {
@@ -398,15 +435,15 @@ func (s *JuliaSession) execute(code string, printResult bool, onChunk func(data 
 	s.busySince.Store(time.Now().UnixNano())
 	defer s.busySince.Store(0)
 
-	juliaErr, err := s.executeRaw(wrapped, sink, true, 0)
+	evalErr, err := s.executeRaw(wrapped, sink, true, 0)
 	if err != nil {
 		return err
 	}
-	if juliaErr != nil {
+	if evalErr != nil {
 		if s.logFile != nil {
-			fmt.Fprintf(s.logFile, "\n%s\n\n", juliaErr.full)
+			fmt.Fprintf(s.logFile, "\n%s\n\n", evalErr.full)
 		}
-		return juliaErr
+		return evalErr
 	}
 	if s.logFile != nil {
 		io.WriteString(s.logFile, "\n\n")
@@ -423,7 +460,7 @@ const (
 // the REPL hits EOF and exits cleanly (running atexit hooks and finalizers),
 // then SIGTERM, then SIGKILL. controlConn/logFile are closed last, after the
 // process is gone, so a clean exit isn't perturbed mid-shutdown.
-func (s *JuliaSession) kill() {
+func (s *Session) kill() {
 	s.dead.Store(true)
 	defer s.closeResources()
 
@@ -444,7 +481,7 @@ func (s *JuliaSession) kill() {
 	<-s.exited
 }
 
-func (s *JuliaSession) waitExit(d time.Duration) bool {
+func (s *Session) waitExit(d time.Duration) bool {
 	select {
 	case <-s.exited:
 		return true
@@ -453,7 +490,7 @@ func (s *JuliaSession) waitExit(d time.Duration) bool {
 	}
 }
 
-func (s *JuliaSession) closeResources() {
+func (s *Session) closeResources() {
 	if s.controlConn != nil {
 		s.controlConn.Close()
 	}
@@ -462,12 +499,8 @@ func (s *JuliaSession) closeResources() {
 	}
 }
 
-// interrupt writes to the fd-4 channel; the runtime turns it into a catchable
-// InterruptException on the eval task (see julia_client_runtime.jl). Escalates
-// to SIGKILL if the call doesn't return within graceSecs; returns survived=true
-// only if the call ended and the process is still alive. Falls back to SIGINT
-// when the channel is unavailable (e.g. Windows).
-func (s *JuliaSession) interrupt(graceSecs float64) (survived bool, err error) {
+// interrupt asks the runtime to interrupt current eval, then escalates to kill.
+func (s *Session) interrupt(graceSecs float64) (survived bool, err error) {
 	if !s.isAlive() {
 		return false, fmt.Errorf("session is not alive")
 	}

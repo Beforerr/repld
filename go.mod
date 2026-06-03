@@ -1,4 +1,4 @@
-module github.com/Beforerr/julia-client
+module github.com/Beforerr/repld
 
 go 1.25.0
 

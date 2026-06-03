@@ -1,82 +1,69 @@
-# julia-client
+# repld
 
-Persistent Julia REPL client and daemon.
-
-Runs Julia code in long-lived sessions over a Unix socket so that state (variables, loaded packages) survives between calls. The project is auto-detected from `$PWD` by default; see [Sessions](#sessions) for routing.
+Stateful and persistent REPL-like kernel for fast incremental iteration (Act → observe → adjust). CLI/agent-first design.
 
 ## Quickstart
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Beforerr/julia-client/main/install.sh | bash
-# Override destination with `INSTALL_DIR=/usr/local/bin`.
+curl -fsSL https://raw.githubusercontent.com/Beforerr/repld/main/install.sh | bash
+# Installs to ~/.local/bin. Override with `INSTALL_DIR` env var.
+# To uninstall: `rm "$(which repld)"`.
 ```
 
-This installs `julia-client` to `~/.local/bin`. The single binary acts as both client and daemon (daemon auto-starts on first `eval`).
+Code is executed in long-lived sessions so state (variables, loaded packages/modules) persist between calls.
 
-To uninstall: `rm "$(which julia-client)"`.
+```bash
+repld julia -e 'using LinearAlgebra; A = rand(3,3)'
+repld julia -E 'det(A)'                 # reuses warm session
+
+repld python3 -c 'import numpy as np; a = np.arange(5)'
+repld python3 -c 'print(a.sum())'       # reuses loaded numpy + a
+repld .venv/bin/python -c '...'         # point at interpreter directly
+```
+
+Per-language docs: **[julia](docs/julia.md)** · **[python](docs/python.md)**.
+
 
 ## Agent skill
 
-The included skill at `skills/julia-client/SKILL.md` teaches Agent how to use `julia-client`.
+The skill at `skills/repld/SKILL.md` teaches agents how to use repld.
 
 ```bash
-npx skills add https://github.com/Beforerr/julia-client
+npx skills add https://github.com/Beforerr/repld
 ```
 
-Or manually by adding this repo's `skills/` directory to your Agent skill search paths.
 
 ## Usage
 
+The eval flags use each language's native spelling — **Julia: `-e` / `-E`**, **Python: `-c`**:
+
 ```bash
-# Evaluate code (daemon starts automatically)
-julia-client -e 'println("hello")'
+repld julia   -e CODE   |  repld python3 -c CODE        # evaluate (daemon auto-starts)
+repld julia   -E EXPR   |  repld python3 -c 'print(EXPR)' # evaluate and display the result
+repld <exe> FILE                                        # run a script file
 
-# Use a custom Julia binary via JULIA_EXE environment variable
-JULIA_EXE=/path/to/julia julia-client -e 'println("hello")'
+repld --session LABEL <exe> ...   # named session, reusable across dirs
+repld --fresh <exe> ...           # restart targeted session first
+repld --trace LEVEL <exe> ...     # error traceback level: short | smart | full
 
-# Explicit project: each distinct --project is its own session
-julia-client --project /path/to/project -e 'using MyPackage'
-julia-client --project @temp -e 'using Pkg; Pkg.add("Example")'
-julia-client --project @myenv -e 'using Example'
-
-# Read from stdin
-echo 'println("hello")' | julia-client
-
-# Session management
-julia-client sessions   # list active sessions
-julia-client trace      # show the last saved Julia traceback without rerunning
-julia-client stop       # shut down the daemon
-
-# Traceback levels
-julia-client --trace full -e 'error("boom")'
-julia-client trace --trace smart
+repld trace [--session=L | exe]   # last saved traceback
+repld interrupt [--session=L | exe] # interrupt in-flight eval
+repld sessions                    # list active sessions
+repld stop                        # shutdown daemon
 ```
 
-Traceback levels:
-
-- `short`: exception message only.
-- `smart`: default eval output; user/project frames plus nearby boundary frames, hiding Julia/client internals.
-- `full`: Julia's full traceback, including runtime and REPL frames.
-
-## Sessions
-
-Each call is routed to a persistent Julia process by a key, in priority order:
-
-1. `--session LABEL` — explicit label, shared across directories and projects.
-2. `--project PROJECT` (not `@.`) — the selector (`@temp`, `@myenv`) or absolute path.
-3. default (`@.` or omitted) — the current directory; Julia uses the nearest `Project.toml` up from `$PWD`.
-
-A session's project is fixed at launch: a different `--project` routes to (and starts) a *different* session, not a reactivation. Same key reuses the same process, so its state persists; different keys are isolated. `--fresh` restarts the targeted session.
+`<exe>` is `julia`, `python3`, an absolute/relative interpreter path, etc. repld's own flags (`--socket`/`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except the eval flag (`-e`/`-c`/`-E`), which repld captures. Each call routes to a persistent session keyed by language + project + `--session`/cwd.
 
 ## Architecture
 
-A single `julia-client` binary serves as both client and daemon:
-
-- **Client mode** (default) — sends JSON requests over a Unix socket (`~/.local/share/julia-client/julia-daemon.sock`)
-- **Daemon mode** (`julia-client daemon`) — background server managing persistent Julia processes; auto-started on first `eval`, shuts down after 1 hour of inactivity
+One Go binary is both the CLI client and the background daemon (auto-started on first use, stopped with `repld stop`). For design details, wire protocol, and key-file map, see [docs/architecture.md](docs/architecture.md).
 
 ## Alternatives
 
+- [Jupyter](https://jupyter.org) (IJulia, ipykernel) is the established polyglot, heavier version of this idea: persistent kernels over ZeroMQ with rich display and browser frontend, kernels for ~100 languages. However
+    - Agent needs none of the UI layer. Rich display protocol (interactive widgets, HTML reprs, plot embedding) is nice for humans but irrelevant for headless agents.
+    - Notebook `.ipynb` format is noisy. JSON wrapper with cell metadata, output mime-bundles, execution counts. Agent thinks better with plain code + stdout.
+    - This tool is the minimal slice: one dependency-free binary, a plain text protocol — trading rich MIME output for simplicity and zero setup.
 - [julia-mcp](https://github.com/aplavin/julia-mcp?tab=readme-ov-file) is very similar but uses MCP server instead
 - [DaemonicCabal.jl](https://github.com/tecosaur/DaemonicCabal.jl) only runs on Linux
-- [Malt.jl](https://github.com/JuliaPluto/Malt.jl) manages isolated Julia worker processes *from within Julia* (used by Pluto). Both run code in persistent, crash-isolated subprocesses, but Malt is a Julia library: its driver must be Julia, and it returns native typed values over Julia's serialization. julia-client targets non-Julia callers — a single dependency-free binary speaking a text protocol, so any language/shell/agent can drive it and Julia versions can be mixed freely (no cross-version serialization constraint). Reach for Malt when your caller is Julia and you need real objects back; reach for julia-client when it isn't.
+- [Malt.jl](https://github.com/JuliaPluto/Malt.jl) manages isolated Julia worker processes *from within Julia* (used by Pluto). Both run code in persistent, crash-isolated subprocesses, but Malt is a Julia library: its driver must be Julia, and it returns native typed values over Julia's serialization. This tool targets non-Julia callers — a single dependency-free binary speaking a text protocol, so any language/shell/agent can drive it and interpreter versions can be mixed freely.
