@@ -2,7 +2,6 @@
 set -euo pipefail
 
 REPO="Beforerr/repld"
-BIN_NAME="repld"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 OS="$(uname -s)"
@@ -20,14 +19,28 @@ case "$ARCH" in
   *)               echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-if [[ -z "${VERSION:-}" ]]; then
-  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*"tag_name": *"\(.*\)".*/\1/')"
+release_url="https://api.github.com/repos/${REPO}/releases/latest"
+if [[ -n "${VERSION:-}" ]]; then
+  release_url="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
 fi
 
-ASSET="${BIN_NAME}_${os}_${arch}.tar.gz"
+release_json="$(curl -fsSL "$release_url")"
+if [[ -z "${VERSION:-}" ]]; then
+  VERSION="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+fi
+
+asset_suffix="_${os}_${arch}.tar.gz"
+ASSET="$(printf '%s\n' "$release_json" | sed -n "s/.*\"name\": *\"\\([^\"]*${asset_suffix}\\)\".*/\\1/p" | head -1)"
+if [[ -z "$ASSET" ]]; then
+  echo "No ${os}/${arch} tar.gz asset found for ${REPO} ${VERSION}" >&2
+  exit 1
+fi
+
+asset_name="${ASSET%$asset_suffix}"
+install_name="${BIN_NAME:-$asset_name}"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 
-echo "Installing ${BIN_NAME} ${VERSION} (${os}/${arch}) -> ${INSTALL_DIR}"
+echo "Installing ${install_name} ${VERSION} (${os}/${arch}) -> ${INSTALL_DIR}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -35,7 +48,15 @@ trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "$URL" -o "$TMP/$ASSET"
 tar -xzf "$TMP/$ASSET" -C "$TMP"
 mkdir -p "$INSTALL_DIR"
-mv "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-chmod +x "$INSTALL_DIR/$BIN_NAME"
+src="$TMP/$asset_name"
+if [[ ! -f "$src" ]]; then
+  src="$(find "$TMP" -type f -perm -111 | head -1)"
+fi
+if [[ -z "$src" || ! -f "$src" ]]; then
+  echo "No executable found in ${ASSET}" >&2
+  exit 1
+fi
+mv "$src" "$INSTALL_DIR/$install_name"
+chmod +x "$INSTALL_DIR/$install_name"
 
 echo "Done. Make sure ${INSTALL_DIR} is on your \$PATH."
