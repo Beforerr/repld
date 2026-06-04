@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -194,17 +195,14 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		}
 	}
 
-	// Interrupt session when client disconnects. (e.g. `timeout 30 repld ...`)
-	evalDone := make(chan struct{})
+	// Tie eval to connection: cancelling ctx on client disconnect lets execute interrupt it
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
 		buf := make([]byte, 256)
 		for {
 			if _, rerr := conn.Read(buf); rerr != nil {
-				select {
-				case <-evalDone:
-				default:
-					sess.interrupt(3.0)
-				}
+				cancel()
 				return
 			}
 		}
@@ -217,8 +215,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 			emit(streamFrame{Chunk: data})
 		}
 	}
-	err = sess.execute(req.Code, req.PrintResult, onChunk)
-	close(evalDone)
+	err = sess.execute(ctx, req.Code, req.PrintResult, onChunk)
 	if err != nil {
 		if !sess.isAlive() {
 			state.manager.remove(req.Lang, req.Session, req.Cwd, disc)

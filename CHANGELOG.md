@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `repld` model
+## [1.0.0]
 
 Reworked into a single language-agnostic binary, `repld`, that selects interpreter from a leading exe positional.
 
@@ -18,12 +18,8 @@ Reworked into a single language-agnostic binary, `repld`, that selects interpret
 - **Flag separation:** repld's own flags (`--socket`/`--session`/`--lang`/
   `--trace`/`--fresh`) are recognized only *before* the exe; after it,
   non-eval flags forward to the interpreter (e.g. `repld julia --project=X -e ...`).
-- Eval flags are language-native: Julia `-e`/`-E`, Python `-c`. A flag that
-  isn't the language's own is forwarded to the interpreter. Reusing a session by
-  `--session` without an exe accepts either spelling.
+- Eval flags are language-native: Julia `-e`/`-E`, Python `-c`.
 - `julia-client` binaries removed. Use `repld julia ...`
-- `--session LABEL` is global (not language-scoped), so existing sessions
-  can be addressed without re-specifying interpreters: `repld --session ml -c ...`.
 - `trace` / `interrupt` are verb-first: `repld trace [--session L] [--trace LVL] [exe]`, `repld interrupt [--session L] [exe]`.
 
 ### Added

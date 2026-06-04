@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -541,7 +542,7 @@ func TestKillRunsAtexitHooks(t *testing.T) {
 	require.NoError(t, sess.start("", cwd))
 
 	marker := filepath.Join(t.TempDir(), "atexit.marker")
-	require.NoError(t, sess.execute(fmt.Sprintf(`atexit(() -> write(%q, "bye"))`, marker), false, nil))
+	require.NoError(t, sess.execute(context.Background(), fmt.Sprintf(`atexit(() -> write(%q, "bye"))`, marker), false, nil))
 
 	sess.kill()
 	require.FileExists(t, marker, "graceful shutdown should run atexit hooks, not SIGKILL")
@@ -587,4 +588,50 @@ func TestExecuteRawWithoutControlDoesNotPanic(t *testing.T) {
 	_, err := sess.executeRaw("1", nil, true, 1)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "control")
+}
+
+// A request queued behind another eval must not interrupt running eval when client disconnects.
+func TestQueuedDisconnectDoesNotInterruptRunningEval(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	repldOK(t, socketPath, cwd, "--session", "q", "julia", "-e", "1")
+
+	// conn1: long enough to still be busy when conn2 queues and disconnects.
+	conn1, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn1.Close()
+	require.NoError(t, json.NewEncoder(conn1).Encode(protocolRequest{
+		Action: "eval", Lang: "julia", Session: "q", Cwd: cwd,
+		Code: "sleep(4); 4321", PrintResult: true,
+	}))
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=")
+	}, 5*time.Second, 50*time.Millisecond, "conn1 eval should be running")
+
+	// conn2: same session, queues behind conn1, then disconnects abruptly.
+	conn2, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	require.NoError(t, json.NewEncoder(conn2).Encode(protocolRequest{
+		Action: "eval", Lang: "julia", Session: "q", Cwd: cwd, Code: "1+1",
+	}))
+	time.Sleep(300 * time.Millisecond)
+	require.NoError(t, conn2.Close())
+
+	// conn1 must finish cleanly — not interrupted by conn2's disconnect.
+	dec := json.NewDecoder(conn1)
+	var out strings.Builder
+	for {
+		var f streamFrame
+		require.NoError(t, dec.Decode(&f))
+		if f.Done {
+			require.Empty(t, f.Error, "running eval was interrupted by a queued client's disconnect")
+			break
+		}
+		out.WriteString(f.Chunk)
+	}
+	require.Contains(t, out.String(), "4321")
 }
