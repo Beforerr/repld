@@ -236,8 +236,9 @@ func TestJuliaWarmSession(t *testing.T) {
 		require.NotContains(t, res.stderr, "Trace saved")
 		require.NotContains(t, res.stderr, "TestSetException")
 
+		// `full` keeps the LoadError context that `short` strips.
 		res = repldOK(t, socketPath, cwd, "trace", "--trace", "full", "julia")
-		require.Contains(t, res.stdout, "TestSetException")
+		require.Contains(t, res.stdout, "in expression starting at")
 
 		res = repldErr(t, socketPath, cwd, "julia", "-e", `using Test; @test false`)
 		require.Contains(t, res.stdout, "Test Failed")
@@ -506,6 +507,28 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return send("println(TestRevPkg.greet())").stdout == "goodbye\n"
 	}, 15*time.Second, 250*time.Millisecond, "Revise did not pick up the package change")
+}
+
+// TestJuliaWorldAgeDisplay: a `using` that precompiles bumps world age past run()'s
+// frame; showing a result whose method was just defined (an @enum's namemap) must not
+// throw "method too new". Guards the Base.invokelatest wrap in runtime.jl.
+func TestJuliaWorldAgeDisplay(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	pkgDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(pkgDir, "src"), 0755))
+	uuid := fmt.Sprintf("a1b2c3d4-0000-0000-0000-%012d", time.Now().UnixNano()%1e12)
+	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "Project.toml"),
+		[]byte("name = \"WAEnum\"\nuuid = \""+uuid+"\"\nversion = \"0.0.1\"\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "src", "WAEnum.jl"),
+		[]byte("module WAEnum\n@enum Shade Dark=0 Light=1\nmkval() = Dark\nend\n"), 0644))
+
+	// Fresh pkg content forces a cache-miss precompile during this eval (the world bump).
+	res := repldOK(t, socketPath, pkgDir, "julia", "--project="+pkgDir, "-E", "using WAEnum; WAEnum.mkval()")
+	require.Equal(t, "Dark::Shade = 0\n", res.stdout)
+	require.NotContains(t, res.stderr, "world age")
+	require.NotContains(t, res.stderr, "too new")
 }
 
 // TestKillRunsAtexitHooks: a graceful shutdown must let Julia run its atexit
