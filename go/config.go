@@ -8,6 +8,7 @@ import (
 	"github.com/Beforerr/repld/go/julia"
 	"github.com/Beforerr/repld/go/python"
 	"github.com/Beforerr/repld/go/r"
+	"github.com/Beforerr/repld/go/wolfram"
 )
 
 type langConfig struct {
@@ -34,6 +35,11 @@ var langs = map[string]langConfig{
 		evalFlags:   []string{"e", "eval"},
 		adapter:     r.Adapter{},
 	},
+	"wolfram": {
+		displayName: "Wolfram",
+		evalFlags:   []string{"c", "code"},
+		adapter:     wolfram.Adapter{},
+	},
 }
 
 // Unknown lang means label-only reuse; accept both eval spellings for parse.
@@ -53,6 +59,8 @@ func langForExe(exe string) string {
 		return "julia"
 	case base == "r" || base == "r.exe":
 		return "r"
+	case base == "wolframscript" || base == "wolframscript.exe" || base == "wolfram" || base == "wolfram.exe" || strings.Contains(base, "wolframkernel") || strings.Contains(base, "mathkernel"):
+		return "wolfram"
 	}
 	return ""
 }

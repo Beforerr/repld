@@ -15,7 +15,7 @@ The interpreter is an explicit leading positional. The language is resolved
 eval flag (`-e`/`-c`/`-E`), which repld captures.
 
 The engine in `go/` is language-agnostic; per-language specifics live behind
-`Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, and `go/r/`. `langs`
+`Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, `go/r/`, and `go/wolfram/`. `langs`
 (`go/config.go`) maps a language name → adapter + eval/print flag spellings.
 
 ## Modes
@@ -35,7 +35,7 @@ optional `daemon --idle-timeout SECS`; default 0 = never).
 supplies the launch argv, the embedded runtime source + its load statement, the
 per-eval wrapper, and the sentinel statement. Code is hex-encoded and eval'd via
 the adapter's wrapper (Julia `include_string(Main, String(hex2bytes("...")))`,
-Python `exec(bytes.fromhex("..."))`, R `parse(text = ...)`) to avoid quoting issues.
+Python `exec(bytes.fromhex("..."))`, R `parse(text = ...)`, Wolfram `ToExpression`) to avoid quoting issues.
 
 ## Eval wire protocol (session ↔ interpreter subprocess)
 
@@ -72,7 +72,7 @@ Invariants:
 - `go/daemon.go` — request dispatch, idle watchdog, client-disconnect→interrupt watcher
 - `go/session.go` — `Session`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt, graceful `kill`
 - `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs
-- `go/julia/`, `go/python/`, `go/r/` — per-language `Adapter` + embedded runtime: dials the control socket, evals code and writes the control frame, handles errors
+- `go/julia/`, `go/python/`, `go/r/`, `go/wolfram/` — per-language `Adapter` + embedded runtime: dials the control socket, evals code and writes the control frame, handles errors
 
 ## Adding a language
 
