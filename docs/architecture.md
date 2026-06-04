@@ -15,7 +15,7 @@ The interpreter is an explicit leading positional. The language is resolved
 eval flag (`-e`/`-c`/`-E`), which repld captures.
 
 The engine in `go/` is language-agnostic; per-language specifics live behind
-`Adapter` (`go/adapter.go`), implemented in `go/julia/` and `go/python/`. `langs`
+`Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, and `go/r/`. `langs`
 (`go/config.go`) maps a language name → adapter + eval/print flag spellings.
 
 ## Modes
@@ -26,8 +26,7 @@ re-execs itself as `daemon` if none is running. A relative exe path is abs-ified
 client-side (`absExe`); a bare name is looked up in PATH on the daemon.
 
 **Daemon mode** (`daemon` subcommand): one language-agnostic server
-(`go/daemon.go`). The per-session `Adapter` is chosen from each request's `lang`
-(`SessionManager.getOrCreate`), so Julia and Python sessions coexist. Sessions
+(`go/daemon.go`). The per-session `Adapter` is chosen from each request's `lang` (`SessionManager.getOrCreate`). Sessions
 are keyed by `lang` + (`--session` label / project / cwd); the lang prefix keeps
 same-dir sessions of different languages distinct. Runs until `stop` (or an
 optional `daemon --idle-timeout SECS`; default 0 = never).
@@ -36,7 +35,7 @@ optional `daemon --idle-timeout SECS`; default 0 = never).
 supplies the launch argv, the embedded runtime source + its load statement, the
 per-eval wrapper, and the sentinel statement. Code is hex-encoded and eval'd via
 the adapter's wrapper (Julia `include_string(Main, String(hex2bytes("...")))`,
-Python `exec(bytes.fromhex("..."))`) to avoid quoting issues.
+Python `exec(bytes.fromhex("..."))`, R `parse(text = ...)`) to avoid quoting issues.
 
 ## Eval wire protocol (session ↔ interpreter subprocess)
 
@@ -73,7 +72,7 @@ Invariants:
 - `go/daemon.go` — request dispatch, idle watchdog, client-disconnect→interrupt watcher
 - `go/session.go` — `Session`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt, graceful `kill`
 - `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs
-- `go/julia/`, `go/python/` — per-language `Adapter` + embedded runtime (`runtime.jl`/`runtime.py`): dials the control socket, evals code and writes the control frame, listens for interrupt bytes; error/traceback rendering
+- `go/julia/`, `go/python/`, `go/r/` — per-language `Adapter` + embedded runtime: dials the control socket, evals code and writes the control frame, handles errors
 
 ## Adding a language
 

@@ -1,6 +1,6 @@
 ---
 name: repld
-description: "Evaluate Julia/Python in long-lived background sessions so imports, variables, and project state persist across calls. Use for iterative work — package development, REPL-style experiments, tests, benchmarks — where starting fresh each time would be wasteful."
+description: "Evaluate Julia/Python/R in long-lived background sessions so imports, variables, and project state persist across calls. Use for iterative work — package development, REPL-style experiments, tests, benchmarks — where starting fresh each time would be wasteful."
 ---
 
 ## Preferred workflow
@@ -21,7 +21,7 @@ cd /tmp && repld --session scratch julia -E 'x'  # reuse existing named session
 - Import packages once per session; later calls should use already-loaded names.
 - Avoid repeating fixture/setup code in every command.
 - Repld flags (`--session`, `--fresh`, `--lang`) go before the interpreter. Interpreter flags go after it.
-- Session routing: `--session LABEL` has highest priority. Otherwise sessions are keyed by language plus adapter-specific environment (for example project flag for Julia, interpreter path for Python) plus cwd.
+- Session routing: `--session LABEL` has highest priority. Otherwise sessions are keyed by language plus adapter-specific environment (for example project flag for Julia, interpreter path for Python/R) plus cwd.
 - Avoid using `--fresh` when a live interpreter can safely pick up changed state.
 
 See [references/julia.md](references/julia.md) for Julia-specific notes.

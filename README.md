@@ -19,9 +19,12 @@ repld julia -E 'det(A)'                 # reuses warm session
 repld python3 -c 'import numpy as np; a = np.arange(5)'
 repld python3 -c 'print(a.sum())'       # reuses loaded numpy + a
 repld .venv/bin/python -c '...'         # point at interpreter directly
+
+repld R -e 'library(stats); x <- rnorm(100)'
+repld R -e 'mean(x)'                    # reuses warm R session
 ```
 
-Per-language docs: **[julia](docs/julia.md)** · **[python](docs/python.md)**.
+Per-language docs: **[julia](skills/repld/references/julia.md)** · **[python](skills/repld/references/python.md)** · **[R](skills/repld/references/r.md)**.
 
 
 ## Agent skill
@@ -35,12 +38,11 @@ npx skills add https://github.com/Beforerr/repld
 
 ## Usage
 
-The eval flags use each language's native spelling — **Julia: `-e` / `-E`**, **Python: `-c`**:
+The eval flags use each language's native spelling — **Julia: `-e` / `-E`**, **Python: `-c`**, **R: `-e`**:
 
 ```bash
-repld julia   -e CODE   |  repld python3 -c CODE        # evaluate (daemon auto-starts)
-repld julia   -E EXPR   |  repld python3 -c 'print(EXPR)' # evaluate and display the result
-repld <exe> FILE                                        # run a script file
+repld julia -e CODE  |  repld python3 -c CODE  |  repld R -e CODE  # evaluate
+repld julia -E EXPR                                                # evaluate and display
 
 repld --session LABEL <exe> ...   # named session, reusable across dirs
 repld --fresh <exe> ...           # restart targeted session first
@@ -52,7 +54,7 @@ repld sessions                    # list active sessions
 repld stop                        # shutdown daemon
 ```
 
-`<exe>` is `julia`, `python3`, an absolute/relative interpreter path, etc. repld's own flags (`--socket`/`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except the eval flag (`-e`/`-c`/`-E`), which repld captures. Each call routes to a persistent session keyed by language + project + `--session`/cwd.
+`<exe>` is `julia`, `python3`, an absolute/relative interpreter path, etc. repld's own flags (`--socket`/`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except native eval/print flags (`-e`/`-c`/`-E`/`--print`). Each call routes to a persistent session keyed by language + project + `--session`/cwd.
 
 ## Architecture
 
@@ -64,6 +66,9 @@ One Go binary is both the CLI client and the background daemon (auto-started on 
     - Agent needs none of the UI layer. Rich display protocol (interactive widgets, HTML reprs, plot embedding) is nice for humans but irrelevant for headless agents.
     - Notebook `.ipynb` format is noisy. JSON wrapper with cell metadata, output mime-bundles, execution counts. Agent thinks better with plain code + stdout.
     - This tool is the minimal slice: one dependency-free binary, a plain text protocol — trading rich MIME output for simplicity and zero setup.
-- [julia-mcp](https://github.com/aplavin/julia-mcp?tab=readme-ov-file) is very similar but uses MCP server instead
-- [DaemonicCabal.jl](https://github.com/tecosaur/DaemonicCabal.jl) only runs on Linux
-- [Malt.jl](https://github.com/JuliaPluto/Malt.jl) manages isolated Julia worker processes *from within Julia* (used by Pluto). Both run code in persistent, crash-isolated subprocesses, but Malt is a Julia library: its driver must be Julia, and it returns native typed values over Julia's serialization. This tool targets non-Julia callers — a single dependency-free binary speaking a text protocol, so any language/shell/agent can drive it and interpreter versions can be mixed freely.
+- Model Context Protocol (MCP) Server is less composable than shell tools and infeasible to use from outside AI sessions.
+    - [mcp-repl](https://github.com/posit-dev/mcp-repl) for persistent Python/R with sandboxing, inline plot images, curated oversized output.
+    - [julia-mcp](https://github.com/aplavin/julia-mcp?tab=readme-ov-file) for Julia
+- Julia
+    - [DaemonicCabal.jl](https://github.com/tecosaur/DaemonicCabal.jl) only runs on Linux
+    - [Malt.jl](https://github.com/JuliaPluto/Malt.jl) manages isolated Julia worker processes *from within Julia* (used by Pluto). Both run code in persistent, crash-isolated subprocesses, but Malt is a Julia library: its driver must be Julia, and it returns native typed values over Julia's serialization. This tool targets non-Julia callers — a single dependency-free binary speaking a text protocol, so any language/shell/agent can drive it and interpreter versions can be mixed freely.
