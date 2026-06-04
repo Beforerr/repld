@@ -40,6 +40,11 @@ func TestParseArgsRepld(t *testing.T) {
 	got = parseCLI([]string{"sessions"})
 	require.Equal(t, "sessions", got.sub, "subcommand is not consumed as exe")
 	require.Equal(t, "", got.exe)
+
+	got = parseCLI([]string{"R", "-e", "1 + 1"})
+	require.Equal(t, "R", got.exe)
+	require.Equal(t, "r", resolveLang(got))
+	require.Equal(t, "eval", got.evalMode)
 }
 
 // TestParseArgsSeparable: repld's own flags are recognized only before the exe;

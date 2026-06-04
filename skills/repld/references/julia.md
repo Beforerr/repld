@@ -7,7 +7,8 @@ Without specifying `--session`, distinct projects correspond to different sessio
 ```bash
 repld julia --project=test -e 'using ImportPackageOnce'
 repld julia --project=@temp -e 'using Pkg; Pkg.add("Example")'
-repld julia +1.11 -e 'VERSION' # default project env is "@."
+repld julia +1.11 -E 'VERSION' # default project env is "@."
+repld --fresh julia -t 4 -E 'Threads.nthreads()'
 ```
 
 ## Revise
@@ -15,5 +16,15 @@ repld julia +1.11 -e 'VERSION' # default project env is "@."
 When `Revise` is available, repld loads it at runtime startup and calls `Revise.revise()` before each eval. After editing package code, expect definitions to update in the warm session.
 Use `--fresh` for untrackable changes, such as:
 - Struct/type redefinition.
-- Adding `using NewPkg` inside modules whose `Project.toml` did not already list `NewPkg`.
+- `using NewPkg` inside modules whose `Project.toml` did not list `NewPkg` when session was created.
 
+## Traceback levels (`--trace`)
+
+- `short`: exception message only.
+- `smart`: default; user/project frames plus nearby boundary frames, hiding Julia/client internals.
+- `full`: Julia's full traceback.
+
+```bash
+repld --trace full julia -e 'error("boom")'
+repld trace --trace smart julia             # show last saved traceback, no rerun
+```

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Beforerr/repld/go/julia"
 	"github.com/Beforerr/repld/go/python"
+	"github.com/Beforerr/repld/go/r"
 )
 
 type langConfig struct {
@@ -28,6 +29,11 @@ var langs = map[string]langConfig{
 		evalFlags:   []string{"c", "command"},
 		adapter:     python.Adapter{},
 	},
+	"r": {
+		displayName: "R",
+		evalFlags:   []string{"e", "eval"},
+		adapter:     r.Adapter{},
+	},
 }
 
 // Unknown lang means label-only reuse; accept both eval spellings for parse.
@@ -38,7 +44,6 @@ func evalPrintFlags(lang string) (eval, print []string) {
 	return []string{"e", "eval", "c", "command"}, []string{"E", "print"}
 }
 
-// .venv/bin/python / python3 -> python, /opt/julia-1.11/bin/julia -> julia.
 func langForExe(exe string) string {
 	base := strings.ToLower(filepath.Base(exe))
 	switch {
@@ -46,6 +51,8 @@ func langForExe(exe string) string {
 		return "python"
 	case strings.Contains(base, "julia"):
 		return "julia"
+	case base == "r" || base == "r.exe":
+		return "r"
 	}
 	return ""
 }

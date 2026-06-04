@@ -1,0 +1,4 @@
+*.go text eol=lf
+*.jl text eol=lf
+*.py text eol=lf
+*.R text eol=lf
