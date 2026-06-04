@@ -19,24 +19,23 @@ import (
 
 const startupTimeout = 120.0
 
-// Session manages a single persistent interpreter subprocess.
 type Session struct {
 	adapter  Adapter
-	lang     string // language name, for the sessions listing
+	lang     string
 	sentinel string
-	fwd      []string // switches forwarded to the interpreter
+	fwd      []string
 
 	proc        *exec.Cmd
 	stdin       io.WriteCloser
 	stdout      *bufio.Reader
 	stderr      *bufio.Reader
-	control     *bufio.Reader // loopback control conn: framed eval status/error read from the runtime
-	controlConn net.Conn      // same conn; write a byte on it to interrupt the in-flight eval
-	exited      chan struct{} // closed once by the reaper when proc exits; the single Wait()
+	control     *bufio.Reader
+	controlConn net.Conn
+	exited      chan struct{}
 	mu          sync.Mutex
 
 	dead      atomic.Bool
-	busySince atomic.Int64 // UnixNano of current call start; 0 when idle
+	busySince atomic.Int64
 	logFile   *os.File
 	startup   []startupChunk
 }
@@ -62,7 +61,6 @@ func newSession(adapter Adapter, sentinel string, fwd []string, logFile *os.File
 }
 
 func (s *Session) start(exe string, workDir string) error {
-	// exe is an abs-ified path or a bare name looked up in PATH
 	if exe == "" {
 		exe = s.adapter.DefaultExe()
 	}
@@ -83,7 +81,6 @@ func (s *Session) start(exe string, workDir string) error {
 		return err
 	}
 
-	// Track every pipe end so any failure below can close them in one shot.
 	var opened []*os.File
 	pipe := func() (r, w *os.File, err error) {
 		r, w, err = os.Pipe()
@@ -110,10 +107,7 @@ func (s *Session) start(exe string, workDir string) error {
 	cmd.Stdout = outW
 	cmd.Stderr = errW
 
-	// Control channel: a loopback socket the runtime dials back on, carrying
-	// framed eval status (child→parent) and interrupt bytes (parent→child) out
-	// of band from user stdout/stderr. A socket rather than inherited fds
-	// keeps the protocol portable to Windows.
+	// Loopback socket keeps control portable; Windows lacks exec.Cmd.ExtraFiles.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		closeAll()
@@ -138,13 +132,10 @@ func (s *Session) start(exe string, workDir string) error {
 	s.stdout = bufio.NewReaderSize(outR, 64*1024*1024)
 	s.stderr = bufio.NewReaderSize(errR, 64*1024*1024)
 
-	// Reap the process exactly once; everything that needs to wait for exit
-	// reads s.exited rather than calling Wait() again (which would error/race).
 	s.exited = make(chan struct{})
 	go func() { cmd.Wait(); close(s.exited) }()
 
-	// The child only dials back once it loads the runtime (below), so accept
-	// concurrently; a failed connection degrades to no control channel.
+	// The runtime dials back only after load; startup cannot block on Accept.
 	controlReady := make(chan struct{})
 	go func() {
 		defer close(controlReady)
@@ -154,8 +145,6 @@ func (s *Session) start(exe string, workDir string) error {
 		}
 	}()
 
-	// Capture all startup output (a forwarded program file runs here, before the
-	// runtime loads) so it can be streamed to the first client.
 	var startup []startupChunk
 	capture := func(data string, isStderr bool) {
 		if s.lang == "python" && isStderr {
@@ -167,14 +156,16 @@ func (s *Session) start(exe string, workDir string) error {
 		startup = append(startup, startupChunk{data: data, isStderr: isStderr})
 	}
 	if _, err := s.executeRaw("", capture, false, startupTimeout); err != nil {
+		s.kill()
 		return fmt.Errorf("interpreter startup failed: %w", err)
 	}
 	s.startup = startup
 	runtimeHex := hex.EncodeToString([]byte(s.adapter.RuntimeSource()))
 	if _, err := s.executeRaw(s.adapter.LoadRuntimeStmt(runtimeHex), nil, false, startupTimeout); err != nil {
+		s.kill()
 		return fmt.Errorf("failed to load runtime: %w", err)
 	}
-	<-controlReady // control is established (or degraded) before the first eval
+	<-controlReady
 	return nil
 }
 
@@ -185,10 +176,6 @@ func stripPythonPrompts(data string) string {
 	return data
 }
 
-// acceptControl waits for the child to dial back on ln and present the shared
-// token as its first line, returning the verified connection and a buffered
-// reader over it. Returns nil if the child never connects in time or the token
-// is wrong, in which case control degrades to "no structured error".
 func acceptControl(ln net.Listener, token string, timeoutSecs float64) (net.Conn, *bufio.Reader) {
 	deadline := time.Now().Add(time.Duration(timeoutSecs * float64(time.Second)))
 	if tl, ok := ln.(*net.TCPListener); ok {
@@ -205,7 +192,7 @@ func acceptControl(ln net.Listener, token string, timeoutSecs float64) (net.Conn
 		conn.Close()
 		return nil, nil
 	}
-	conn.SetReadDeadline(time.Time{}) // frames arrive whenever an eval runs
+	conn.SetReadDeadline(time.Time{})
 	return conn, br
 }
 
@@ -237,13 +224,11 @@ func decodeHexString(s string) (string, error) {
 	return string(b), nil
 }
 
-// parseControlLine decodes one control frame: "OK", or "ERR <hex short> <hex
-// smart> <hex full>". Malformed/empty degrades to no structured error.
 func parseControlLine(line string) *evalError {
 	line = strings.TrimRight(line, "\r\n")
 	rest, ok := strings.CutPrefix(line, "ERR ")
 	if !ok {
-		return nil // "OK", "", or unrecognized
+		return nil
 	}
 	parts := strings.Split(rest, " ")
 	if len(parts) != 3 {
@@ -258,10 +243,6 @@ func parseControlLine(line string) *evalError {
 	return &evalError{short: short, smart: smart, full: full}
 }
 
-// scanToSentinel relays r line by line to emit until a line ending in the
-// sentinel (the drain barrier), then returns. On EOF/error before the sentinel
-// it returns that error. It keeps a bounded tail of recent output for the
-// caller's "died during execution" diagnostic.
 func (s *Session) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(string, bool)) (tail string, err error) {
 	const maxTail = 64 * 1024
 	var buf []byte
@@ -293,22 +274,12 @@ func (s *Session) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(strin
 	}
 }
 
-// executeRaw writes code followed by a sentinel command, relays stdout/stderr
-// via onChunk until both sentinels arrive (the drain barrier), and — when
-// expectControl is set — reads one framed status/error from fd 3. User output
-// is streamed, never retained; only a bounded tail is kept for the
-// "died during execution" diagnostic. Returns the eval's error (nil on
-// success or when no control frame is expected) and an infra error.
 func (s *Session) executeRaw(code string, onChunk func(data string, isStderr bool), expectControl bool, timeoutSecs float64) (*evalError, error) {
 	if expectControl && s.control == nil {
 		return nil, fmt.Errorf("control channel unavailable")
 	}
 
-	// stdout and stderr are read by separate goroutines below, but the
-	// consumer (daemon JSON encoder, session log) is not safe for concurrent
-	// writes. Serialize delivery so each chunk is emitted atomically; this also
-	// gives clients a deterministic frame order when merging the two streams
-	// (e.g. shell `2>&1`).
+	// The JSON encoder and log writer are shared between stdout/stderr readers.
 	var emitMu sync.Mutex
 	emit := onChunk
 	if onChunk != nil {
@@ -345,17 +316,14 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 		errCh <- scanResult{tail: tail, err: err}
 	}()
 
-	// Drain the control channel concurrently. The runtime flushes the frame
-	// before printing the sentinel, but a large frame can exceed the pipe
-	// buffer, so we must read it as it's written rather than after the sentinel
-	// (which would deadlock). Buffered so the goroutine never leaks if the
-	// process dies and we return early.
+	// Read while the runtime writes; large tracebacks can otherwise deadlock
+	// before sentinel drain completes.
 	ctrlCh := make(chan *evalError, 1)
 	if expectControl {
 		go func() {
 			line, err := s.control.ReadString('\n')
 			if err != nil {
-				ctrlCh <- nil // control unavailable; degrade to no structured error
+				ctrlCh <- nil
 				return
 			}
 			ctrlCh <- parseControlLine(line)
@@ -401,7 +369,7 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 		s.proc.Process.Kill()
 		<-s.exited
 		s.dead.Store(true)
-		<-doneCh // both goroutines unblock on EOF after kill
+		<-doneCh
 		return nil, fmt.Errorf("Execution timed out after %vs. Session killed; it will restart on next call.", timeoutSecs)
 	}
 }
@@ -417,10 +385,6 @@ func (s *Session) execute(code string, printResult bool, onChunk func(data strin
 	hexCode := hex.EncodeToString([]byte(code))
 	wrapped := s.adapter.WrapEval(hexCode, printResult)
 
-	// Tee both streams to the log as they arrive. executeRaw serializes the
-	// callback, so stdout and stderr land interleaved in causal order — the
-	// same view a terminal shows under `2>&1`. (The NDJSON protocol keeps them
-	// tagged for machine consumers; the log is the human-readable record.)
 	sink := onChunk
 	if s.logFile != nil {
 		fmt.Fprintf(s.logFile, "[%s] %s> %s\n", time.Now().Format("15:04:05"), s.lang, code)
@@ -452,14 +416,10 @@ func (s *Session) execute(code string, printResult bool, onChunk func(data strin
 }
 
 const (
-	shutdownGrace = 5 * time.Second // clean REPL exit after stdin EOF
-	termGrace     = 2 * time.Second // SIGTERM grace before SIGKILL
+	shutdownGrace = 5 * time.Second
+	termGrace     = 2 * time.Second
 )
 
-// kill shuts the session down, escalating only as far as needed: close stdin so
-// the REPL hits EOF and exits cleanly (running atexit hooks and finalizers),
-// then SIGTERM, then SIGKILL. controlConn/logFile are closed last, after the
-// process is gone, so a clean exit isn't perturbed mid-shutdown.
 func (s *Session) kill() {
 	s.dead.Store(true)
 	defer s.closeResources()
@@ -499,7 +459,6 @@ func (s *Session) closeResources() {
 	}
 }
 
-// interrupt asks the runtime to interrupt current eval, then escalates to kill.
 func (s *Session) interrupt(graceSecs float64) (survived bool, err error) {
 	if !s.isAlive() {
 		return false, fmt.Errorf("session is not alive")
@@ -508,7 +467,6 @@ func (s *Session) interrupt(graceSecs float64) (survived bool, err error) {
 		return false, fmt.Errorf("session has no process")
 	}
 	if s.busySince.Load() == 0 {
-		// Nothing to interrupt; treat as no-op success.
 		return true, nil
 	}
 	// A single interrupt can be silently lost: scheduling the InterruptException
@@ -541,11 +499,10 @@ func (s *Session) interrupt(graceSecs float64) (survived bool, err error) {
 			return false, nil
 		case <-resend.C:
 			if s.busySince.Load() != 0 {
-				_ = signal() // a prior interrupt may have been lost to the race
+				_ = signal()
 			}
 		case <-poll.C:
 			if s.busySince.Load() == 0 {
-				// Call returned; survived iff process didn't crash on the interrupt.
 				return s.isAlive(), nil
 			}
 		}

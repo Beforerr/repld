@@ -1,8 +1,6 @@
-// repld: CLI + daemon for persistent REPL sessions across interpreters.
 package main
 
 import (
-	"bufio"
 	"cmp"
 	"encoding/json"
 	"flag"
@@ -55,12 +53,12 @@ type response struct {
 
 type protocolRequest struct {
 	Action          string   `json:"action"`
-	Lang            string   `json:"lang,omitempty"` // selects the adapter (julia, python)
+	Lang            string   `json:"lang,omitempty"`
 	Code            string   `json:"code,omitempty"`
 	Cwd             string   `json:"cwd,omitempty"`
 	Session         string   `json:"session,omitempty"`
-	Args            []string `json:"args,omitempty"` // switches forwarded to the interpreter
-	Exe             string   `json:"exe,omitempty"`  // interpreter path
+	Args            []string `json:"args,omitempty"`
+	Exe             string   `json:"exe,omitempty"`
 	PrintResult     bool     `json:"print_result,omitempty"`
 	Fresh           bool     `json:"fresh,omitempty"`
 	TraceLevel      string   `json:"trace_level,omitempty"`
@@ -111,15 +109,7 @@ func run(socketPath string, req protocolRequest, startIfNeeded bool) {
 	}
 
 	var resp response
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-	if scanner.Scan() {
-		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -173,7 +163,7 @@ func cmdInterrupt(socketPath, lang, exe, session string, fwd []string) {
 		Exe:     exe,
 		Cwd:     mustGetwd(),
 		Session: session,
-		Args:    fwd, // carries --project so the daemon keys the right session
+		Args:    fwd,
 	}, false)
 }
 
@@ -227,21 +217,34 @@ var subcommands = map[string]bool{
 	"sessions": true, "trace": true, "interrupt": true, "stop": true, "daemon": true,
 }
 
-// parsed is the result of scanning the command line: repld's own flags, the
-// optional leading exe, the eval mode/code, any subcommand, and everything else
-// collected as passthrough switches for the interpreter.
 type parsed struct {
 	socket   string
-	exe      string // leading interpreter positional
-	lang     string // --lang override
+	exe      string
+	lang     string
 	session  string
 	trace    string
 	fresh    bool
-	evalMode string // "", "eval", or "print"
+	evalMode string
 	code     string
-	fwd      []string // forwarded to the interpreter (flags, program file, args)
-	sub      string   // leading subcommand, "" if none
-	subArgs  []string // tokens after the subcommand
+	fwd      []string
+	sub      string
+	subArgs  []string
+}
+
+func flagName(token string) string {
+	name, _, _ := strings.Cut(strings.TrimLeft(token, "-"), "=")
+	return name
+}
+
+func consumeFlagValue(args []string, i int) (value string, next int, ok bool) {
+	_, inline, hasEq := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+	if hasEq {
+		return inline, i + 1, true
+	}
+	if i+1 >= len(args) {
+		return "", i + 1, false
+	}
+	return args[i+1], i + 2, true
 }
 
 func parseArgs(args []string) parsed {
@@ -249,7 +252,6 @@ func parseArgs(args []string) parsed {
 	repld := map[string]*string{
 		"socket": &p.socket, "lang": &p.lang, "session": &p.session, "trace": &p.trace,
 	}
-	// evalModeFor reports the eval mode ("eval"/"print") a flag name
 	evalModeFor := func(name string) string {
 		evalNames, printNames := evalPrintFlags(resolveLang(p))
 		if slices.Contains(evalNames, name) {
@@ -264,26 +266,21 @@ func parseArgs(args []string) parsed {
 	for i := 0; i < len(args); {
 		t := args[i]
 		if strings.HasPrefix(t, "-") {
-			name, inline, hasEq := strings.Cut(strings.TrimLeft(t, "-"), "=")
+			name := flagName(t)
 			dst, isRepld := repld[name]
 			mode := evalModeFor(name)
-			// A flag-with-value: an eval flag (any position) or a repld flag (pre-exe).
 			if mode != "" || (isRepld && p.exe == "") {
-				val := inline
-				if !hasEq {
-					if i+1 >= len(args) {
-						fmt.Fprintf(os.Stderr, "missing value for %s\n", t)
-						usage()
-					}
-					val = args[i+1]
-					i++
+				val, next, ok := consumeFlagValue(args, i)
+				if !ok {
+					fmt.Fprintf(os.Stderr, "missing value for %s\n", t)
+					usage()
 				}
 				if mode != "" {
 					p.evalMode, p.code = mode, val
 				} else {
 					*dst = val
 				}
-				i++
+				i = next
 				continue
 			}
 			if name == "fresh" && p.exe == "" {
@@ -321,8 +318,6 @@ func resolveExeStr(exe, lang string) string {
 	return absExe(exe)
 }
 
-// subTarget locates an existing session for a verb-first subcommand:
-// repld trace/interrupt [exe] [--session L] [interp-flags].
 type subTarget struct {
 	exe, lang, session, level string
 	fwd                       []string
@@ -331,36 +326,28 @@ type subTarget struct {
 func parseTarget(p parsed) subTarget {
 	tg := subTarget{lang: p.lang, session: p.session, level: cmp.Or(p.trace, "full")}
 	a := p.subArgs
-	for i := 0; i < len(a); i++ {
+	for i := 0; i < len(a); {
 		s := a[i]
 		if !strings.HasPrefix(s, "-") {
 			if tg.exe == "" && s != "" {
-				tg.exe = s // leading positional = interpreter (locator)
+				tg.exe = s
 			} else {
 				tg.fwd = append(tg.fwd, s)
 			}
+			i++
 			continue
 		}
-		name, inline, hasEq := strings.Cut(strings.TrimLeft(s, "-"), "=")
-		val := func() string {
-			if hasEq {
-				return inline
-			}
-			if i+1 < len(a) {
-				i++
-				return a[i]
-			}
-			return ""
-		}
-		switch name {
+
+		switch flagName(s) {
 		case "session":
-			tg.session = val()
+			tg.session, i, _ = consumeFlagValue(a, i)
 		case "lang":
-			tg.lang = val()
+			tg.lang, i, _ = consumeFlagValue(a, i)
 		case "trace":
-			tg.level = val()
+			tg.level, i, _ = consumeFlagValue(a, i)
 		default:
-			tg.fwd = append(tg.fwd, s) // interpreter flag (e.g. --project) → locator disc
+			tg.fwd = append(tg.fwd, s)
+			i++
 		}
 	}
 	tg.lang = cmp.Or(tg.lang, langForExe(tg.exe))
@@ -389,23 +376,18 @@ func main() {
 		return
 	}
 
-	// An exe (hence a known lang) is required to create session
 	if lang == "" && p.session == "" {
 		fmt.Fprintln(os.Stderr, "no interpreter: use `repld <exe> ...`, --lang, or --session LABEL for an existing session")
 		usage()
 	}
-	exe := resolveExeStr(p.exe, lang) // relative path (e.g. .venv/bin/python) → abs against cwd; bare name unchanged
+	exe := resolveExeStr(p.exe, lang)
 
 	switch {
 	case p.evalMode != "":
 		cmdEval(p.socket, lang, p.code, exe, p.session, p.evalMode == "print", p.fresh, p.trace, p.fwd)
 	case len(p.fwd) > 0:
-		// Forwarded tokens (a program file and/or interpreter flags/args) run at
-		// session launch, exactly as the interpreter would handle them. No code
-		// to eval; the launch output is streamed back.
 		cmdEval(p.socket, lang, "", exe, p.session, false, p.fresh, p.trace, p.fwd)
 	default:
-		// No args/code: read stdin only if piped.
 		fi, err := os.Stdin.Stat()
 		if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
 			usage()
