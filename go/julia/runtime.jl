@@ -57,7 +57,7 @@ end
 function _user_frame(frame, roots, debug_entries)
     path = _file(frame)
     pseudo_path = startswith(path, "./") ? path[3:end] : path
-    pseudo_path == "julia-client-eval" && return true
+    pseudo_path == "repld-eval" && return true
     startswith(path, "REPL") && return true
 
     base = splitext(basename(path))[1]
@@ -226,7 +226,7 @@ function run(hex_code, print_result)
             isdefined(Main, :Revise) && Main.Revise.revise()
         catch
         end
-        include_string(Main, code, "julia-client-eval")
+        include_string(Main, code, "repld-eval")
     end
     _CURRENT[] = task
     schedule(task)

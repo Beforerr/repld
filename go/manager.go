@@ -11,44 +11,52 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// SessionManager tracks multiple named sessions driven by one adapter.
 type SessionManager struct {
-	adapter    Adapter
 	mu         sync.Mutex
-	sessions   map[string]*JuliaSession
-	lastErrors map[string]*juliaEvalError
+	sessions   map[string]*Session
+	lastErrors map[string]*evalError
 	sf         singleflight.Group
 	logDir     string
 }
 
-func newSessionManager(adapter Adapter) *SessionManager {
-	logDir, _ := os.MkdirTemp("", "julia-client-logs-")
+func newSessionManager() *SessionManager {
+	logDir, _ := os.MkdirTemp("", "repld-logs-")
 	return &SessionManager{
-		adapter:    adapter,
-		sessions:   make(map[string]*JuliaSession),
-		lastErrors: make(map[string]*juliaEvalError),
+		sessions:   make(map[string]*Session),
+		lastErrors: make(map[string]*evalError),
 		logDir:     logDir,
 	}
 }
 
-// key returns the session map key.
-// Priority: explicit session label > explicit project path > cwd.
-func (m *SessionManager) key(session, project, cwd string) string {
+// key namespaces a session. A --session label is global (reusable without
+// re-specifying interpreter). Otherwise it's lang + cwd + disc, where disc
+// is the adapter's per-environment discriminant (Julia's --project).
+func (m *SessionManager) key(lang, session, cwd, disc string) string {
 	if session != "" {
 		return "~" + session
 	}
-	if project != "" && project != "@." {
-		if strings.HasPrefix(project, "@") {
-			return project
+	route := cwd
+	if lang == "julia" && disc != "" && disc != "@." {
+		route = disc
+		if !strings.HasPrefix(route, "@") && !filepath.IsAbs(route) {
+			route = filepath.Join(cwd, route)
 		}
-		abs, _ := filepath.Abs(project)
-		return abs
+		route = filepath.Clean(route)
 	}
-	return cwd
+	return lang + "\x00" + route + "\x00" + disc
+}
+
+// keyLabel is the human label for a key: a "~label" session label, else the cwd
+// (the lang prefix and project discriminant are shown separately).
+func keyLabel(key string) string {
+	if !strings.Contains(key, "\x00") {
+		return key
+	}
+	return strings.SplitN(key, "\x00", 3)[1]
 }
 
 func (m *SessionManager) openLogFile(key string) *os.File {
-	safe := strings.NewReplacer("/", "_", "\\", "_").Replace(strings.Trim(key, "/~"))
+	safe := strings.NewReplacer("/", "_", "\\", "_", "\x00", "-").Replace(strings.Trim(key, "/~"))
 	if safe == "" {
 		safe = "default"
 	}
@@ -56,12 +64,16 @@ func (m *SessionManager) openLogFile(key string) *os.File {
 	return f
 }
 
-// juliaArgs apply only when a session is first created; a live session for the
-// key is reused as-is regardless (use --fresh to rebuild with new args).
-func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, juliaArgs []string) (*JuliaSession, error) {
-	key := m.key(session, project, cwd)
+// forwarded args apply only when a session is first created;
+// a live session for the key is reused as-is.
+func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []string) (*Session, error) {
+	lc, known := langs[lang]
+	disc := ""
+	if known {
+		disc = lc.adapter.SessionKey(exe, fwd)
+	}
+	key := m.key(lang, session, cwd, disc)
 
-	// Fast path: return existing live session without singleflight overhead.
 	m.mu.Lock()
 	sess := m.sessions[key]
 	m.mu.Unlock()
@@ -69,13 +81,15 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, jul
 		return sess, nil
 	}
 
-	// Slow path: deduplicate concurrent creation for the same key.
 	v, err, _ := m.sf.Do(key, func() (any, error) {
 		m.mu.Lock()
 		sess := m.sessions[key]
 		m.mu.Unlock()
 		if sess != nil && sess.isAlive() {
 			return sess, nil
+		}
+		if !known {
+			return nil, fmt.Errorf("unknown language %q; pass an interpreter or --lang", lang)
 		}
 		if sess != nil {
 			sess.kill()
@@ -84,12 +98,9 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, jul
 			m.mu.Unlock()
 		}
 
-		projectVal := project
-		if projectVal == "" {
-			projectVal = "@."
-		}
-		sess = newJuliaSession(m.adapter, projectVal, newSentinel(), juliaArgs, m.openLogFile(key))
-		if err := sess.start(juliaExe, cwd); err != nil {
+		sess = newSession(lc.adapter, newSentinel(), fwd, m.openLogFile(key))
+		sess.lang = lang
+		if err := sess.start(exe, cwd); err != nil {
 			return nil, err
 		}
 
@@ -101,18 +112,18 @@ func (m *SessionManager) getOrCreate(cwd, project, session, juliaExe string, jul
 	if err != nil {
 		return nil, err
 	}
-	return v.(*JuliaSession), nil
+	return v.(*Session), nil
 }
 
-func (m *SessionManager) remove(session, project, cwd string) {
-	key := m.key(session, project, cwd)
+func (m *SessionManager) remove(lang, session, cwd, disc string) {
+	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()
 	delete(m.sessions, key)
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) restart(session, project, cwd string) {
-	key := m.key(session, project, cwd)
+func (m *SessionManager) restart(lang, session, cwd, disc string) {
+	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()
 	sess := m.sessions[key]
 	delete(m.sessions, key)
@@ -123,27 +134,36 @@ func (m *SessionManager) restart(session, project, cwd string) {
 	}
 }
 
-func (m *SessionManager) recordError(session, project, cwd string, err *juliaEvalError) {
-	key := m.key(session, project, cwd)
+func (m *SessionManager) hasLiveSession(lang, session, cwd, disc string) bool {
+	key := m.key(lang, session, cwd, disc)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess := m.sessions[key]
+	return sess != nil && sess.isAlive()
+}
+
+func (m *SessionManager) recordError(lang, session, cwd, disc string, err *evalError) {
+	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()
 	m.lastErrors[key] = err
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) lastError(session, project, cwd string) *juliaEvalError {
-	key := m.key(session, project, cwd)
+func (m *SessionManager) lastError(lang, session, cwd, disc string) *evalError {
+	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastErrors[key]
 }
 
 type sessionInfo struct {
-	key       string
-	project   string
-	alive     bool
-	juliaArgs []string
-	logFile   string
-	busyFor   time.Duration // 0 when idle
+	lang    string
+	label   string // session label or cwd
+	project string // environment discriminant (Julia --project); "" if none
+	alive   bool
+	args    []string
+	logFile string
+	busyFor time.Duration // 0 when idle
 }
 
 func (m *SessionManager) list() []sessionInfo {
@@ -153,10 +173,13 @@ func (m *SessionManager) list() []sessionInfo {
 	result := make([]sessionInfo, 0, len(m.sessions))
 	for key, sess := range m.sessions {
 		info := sessionInfo{
-			key:       key,
-			project:   sess.projectVal,
-			alive:     sess.isAlive(),
-			juliaArgs: sess.juliaArgs,
+			lang:  sess.lang,
+			label: keyLabel(key),
+			alive: sess.isAlive(),
+			args:  sess.fwd,
+		}
+		if sess.lang == "julia" {
+			info.project = sess.adapter.SessionKey("", sess.fwd)
 		}
 		if since := sess.busySince.Load(); since != 0 {
 			info.busyFor = now.Sub(time.Unix(0, since))
@@ -169,8 +192,8 @@ func (m *SessionManager) list() []sessionInfo {
 	return result
 }
 
-func (m *SessionManager) interrupt(session, project, cwd string, graceSecs float64) (string, error) {
-	key := m.key(session, project, cwd)
+func (m *SessionManager) interrupt(lang, session, cwd, disc string, graceSecs float64) (string, error) {
+	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()
 	sess := m.sessions[key]
 	m.mu.Unlock()
@@ -192,11 +215,11 @@ func (m *SessionManager) interrupt(session, project, cwd string, graceSecs float
 
 func (m *SessionManager) shutdown() {
 	m.mu.Lock()
-	sessions := make([]*JuliaSession, 0, len(m.sessions))
+	sessions := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		sessions = append(sessions, s)
 	}
-	m.sessions = make(map[string]*JuliaSession)
+	m.sessions = make(map[string]*Session)
 	m.mu.Unlock()
 
 	for _, s := range sessions {
