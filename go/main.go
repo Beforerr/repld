@@ -188,13 +188,13 @@ Usage:
   repld <command> [<exe>] [--session L]   # target a session: trace, interrupt
   repld <command>                       # daemon-wide: sessions, stop, daemon
 
-<exe> is the interpreter to run (julia, python3, R, .venv/bin/python, /path/...).
+<exe> is the interpreter to run (julia, python3, R, wolframscript, .venv/bin/python, /path/...).
 The language is inferred from its name, or set with --lang. 
 repld's own flags must come before <exe>; after it, every flag forwards verbatim to the
-interpreter except native eval/print flags (-e/-E for julia, -c for python, -e for R).
+interpreter except native eval/print flags (-e/-E for julia, -c for python/wolframscript, -e for R).
 
 repld flags:
-  --lang LANG          Force the language (julia, python, r) when the exe is ambiguous
+  --lang LANG          Force the language (julia, python, r, wolfram) when the exe is ambiguous
   --session LABEL      Named session, reusable without re-specifying the exe
   --fresh              Clear the targeted session before evaluating
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)

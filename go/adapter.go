@@ -6,7 +6,7 @@ type Adapter interface {
 
 	LaunchArgs(forwarded []string) []string
 
-	// SessionKey separates environments: Julia project, Python interpreter.
+	// SessionKey separates environments: project, interpreter, or runtime identity.
 	SessionKey(exe string, forwarded []string) string
 
 	RuntimeSource() string

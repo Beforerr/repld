@@ -2,3 +2,5 @@
 *.jl text eol=lf
 *.py text eol=lf
 *.R text eol=lf
+*.wl text eol=lf
+*.wls text eol=lf
