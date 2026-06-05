@@ -160,7 +160,7 @@ function _render_error(err, bt)
             Base.invokelatest(showerror, io, display_err, bt)
         end
     else
-        sprint(showerror, display_err)
+        sprint(io -> Base.invokelatest(showerror, io, display_err))
     end
     short = "ERROR: " * short_body
     if test_exception
@@ -168,7 +168,7 @@ function _render_error(err, bt)
     else
         smart =  short * "\n" * _render_selected(frames; include_omitted=true)
     end
-    full = sprint(showerror, err, bt)
+    full = sprint(io -> Base.invokelatest(showerror, io, err, bt))
     return short, smart, full
 end
 
@@ -241,7 +241,10 @@ function run(hex_code, print_result)
     end
     if isnothing(err)
         if print_result
-            show(IOContext(stdout, :limit => true), MIME("text/plain"), value)
+            # invokelatest: eval may load a package, bumping world age past this frame;
+            # without it, showing a value whose method was just defined (e.g. a new
+            # @enum's namemap) throws "method too new".
+            Base.invokelatest(show, IOContext(stdout, :limit => true), MIME("text/plain"), value)
             println(stdout)
         end
         flush(stdout)
