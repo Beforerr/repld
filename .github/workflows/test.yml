@@ -24,4 +24,15 @@ jobs:
         with:
           rtools-version: none
       - run: julia -e 'using Pkg; Pkg.add("Revise")'
-      - run: go test -C go -v -timeout 300s
+      - run: go test -C go -v -timeout 300s -coverprofile=coverage.out -covermode=atomic
+      - name: Coverage summary
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          {
+            echo '### Go coverage'
+            echo '```'
+            go tool cover -func=go/coverage.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=go/coverage.out | tail -n1
