@@ -2,6 +2,7 @@ package wolfram
 
 import (
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -38,6 +39,17 @@ func (Adapter) BootstrapStmt() string { return "" }
 
 func (Adapter) WrapEval(hexCode string, printResult bool) string {
 	return fmt.Sprintf("REPLD_EVAL %s %s", hexCode, wlBool(printResult))
+}
+
+// Block successfully scopes $ScriptCommandLine
+func (Adapter) EvalFileStmt(path string, args []string) string {
+	elems := make([]string, 0, len(args)+1)
+	elems = append(elems, fmt.Sprintf(`repldDecode["%s"]`, hex.EncodeToString([]byte(path))))
+	for _, a := range args {
+		elems = append(elems, fmt.Sprintf(`repldDecode["%s"]`, hex.EncodeToString([]byte(a))))
+	}
+	return fmt.Sprintf(`Block[{$ScriptCommandLine = {%s}}, Get[First[$ScriptCommandLine]]]`,
+		strings.Join(elems, ", "))
 }
 
 func (Adapter) SentinelStmt(sentinel string) string {

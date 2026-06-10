@@ -44,8 +44,8 @@ npx skills add https://github.com/Beforerr/repld
 The eval flags use each language's native spelling — **Julia: `-e` / `-E`**, **Python: `-c`**, **R: `-e`**, **WolframScript: `-c`**:
 
 ```bash
-repld julia -e CODE  |  repld python3 -c CODE  |  repld R -e CODE  |  repld wolframscript -c CODE
-repld julia -E EXPR                                                # evaluate and display
+repld julia -e CODE  |  repld julia -E EXPR  |  repld python3 -c CODE  |  repld R -e CODE  |  repld wolframscript -c CODE
+repld julia script.jl [args...]
 
 repld --session LABEL <exe> ...   # named session, reusable across dirs
 repld --fresh <exe> ...           # restart targeted session first

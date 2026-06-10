@@ -32,8 +32,8 @@ type Session struct {
 	control     *bufio.Reader
 	controlConn net.Conn
 	exited      chan struct{}
-	mu          sync.Mutex      // guards startup
-	sem         chan struct{}   // capacity-1: serialises evals, ctx-cancellable acquire
+	mu          sync.Mutex    // guards startup
+	sem         chan struct{} // capacity-1: serialises evals, ctx-cancellable acquire
 
 	dead      atomic.Bool
 	busySince atomic.Int64

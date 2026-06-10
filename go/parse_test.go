@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -98,6 +100,28 @@ func TestParseTargetVerbFirst(t *testing.T) {
 	require.Equal(t, "", tg.lang)
 }
 
+func TestParseArgsFileMode(t *testing.T) {
+	dir := t.TempDir()
+	jl := filepath.Join(dir, "script.jl")
+	require.NoError(t, os.WriteFile(jl, []byte("1\n"), 0644))
+
+	// Everything after the file (flags included, no ext required) is script args.
+	got := parseCLI([]string{"julia", jl, "a", "--flag", "b"})
+	require.Equal(t, jl, got.file)
+	require.Equal(t, []string{"a", "--flag", "b"}, got.fileArgs)
+	require.Empty(t, got.fwd)
+
+	recipe := filepath.Join(dir, "recipe")
+	require.NoError(t, os.WriteFile(recipe, []byte("#!/usr/bin/env -S repld julia\n1\n"), 0755))
+	require.Equal(t, recipe, parseCLI([]string{"julia", recipe, "x"}).file)
+
+	// An eval flag disables detection; a missing path forwards as a launch arg.
+	got = parseCLI([]string{"julia", "-e", "1", jl})
+	require.Equal(t, "", got.file)
+	require.Equal(t, []string{jl}, got.fwd)
+	require.Equal(t, "", parseCLI([]string{"julia", filepath.Join(dir, "nope.jl")}).file)
+}
+
 func TestParseArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -118,7 +142,9 @@ func TestParseArgs(t *testing.T) {
 			parsed{fwd: []string{"--startup-file=no"}}},
 		{"juliaup channel forwards after exe", []string{"julia", "+1.11", "-e", "c"},
 			parsed{exe: "julia", evalMode: "eval", code: "c", fwd: []string{"+1.11"}}},
-		{"program file forwards after exe", []string{"julia", "script.jl"}, parsed{exe: "julia", fwd: []string{"script.jl"}}},
+		// Positionals after launch args are never file mode.
+		{"no file mode once forwarding starts", []string{"julia", "--project", "/env", "script.jl", "arg1"},
+			parsed{exe: "julia", fwd: []string{"--project", "/env", "script.jl", "arg1"}}},
 		{"subcommand", []string{"sessions"}, parsed{sub: "sessions"}},
 		{"flags before subcommand", []string{"--socket", "x", "sessions"},
 			parsed{socket: "x", sub: "sessions"}},

@@ -215,7 +215,13 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 			emit(streamFrame{Chunk: data})
 		}
 	}
-	err = sess.execute(ctx, req.Code, req.PrintResult, onChunk)
+	// File mode: the adapter's snippet is just code through the normal eval path.
+	code, printResult := req.Code, req.PrintResult
+	if req.File != "" {
+		code = sess.adapter.EvalFileStmt(req.File, req.FileArgs)
+		printResult = false
+	}
+	err = sess.execute(ctx, code, printResult, onChunk)
 	if err != nil {
 		if !sess.isAlive() {
 			state.manager.remove(req.Lang, req.Session, req.Cwd, disc)

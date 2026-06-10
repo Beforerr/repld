@@ -13,6 +13,9 @@ type Adapter interface {
 	BootstrapStmt() string
 	WrapEval(hexCode string, printResult bool) string
 
+	// EvalFileStmt evals a source file (restoring argv after eval).
+	EvalFileStmt(path string, args []string) string
+
 	// SentinelStmt is the stdout/stderr drain barrier.
 	SentinelStmt(sentinel string) string
 

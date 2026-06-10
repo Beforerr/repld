@@ -63,6 +63,8 @@ type protocolRequest struct {
 	Fresh           bool     `json:"fresh,omitempty"`
 	TraceLevel      string   `json:"trace_level,omitempty"`
 	RequireExisting bool     `json:"require_existing,omitempty"`
+	File            string   `json:"file,omitempty"`
+	FileArgs        []string `json:"file_args,omitempty"`
 }
 
 type streamFrame struct {
@@ -156,6 +158,28 @@ func cmdEval(socketPath, lang, code, exe, session string, printResult, fresh boo
 	run(socketPath, req, true)
 }
 
+// cmdEvalFile sends an in-session file eval: path abs-ified but not read here —
+// the interpreter reads it at eval time, so edits between calls take effect.
+func cmdEvalFile(socketPath, lang, file, exe, session string, fresh bool, traceLevel string, fileArgs, fwd []string) {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	run(socketPath, protocolRequest{
+		Action:     "eval",
+		Lang:       lang,
+		Cwd:        mustGetwd(),
+		Session:    session,
+		Exe:        exe,
+		TraceLevel: traceLevel,
+		Args:       fwd,
+		Fresh:      fresh,
+		File:       abs,
+		FileArgs:   fileArgs,
+	}, true)
+}
+
 func cmdInterrupt(socketPath, lang, exe, session string, fwd []string) {
 	run(socketPath, protocolRequest{
 		Action:  "interrupt",
@@ -226,6 +250,8 @@ type parsed struct {
 	fresh    bool
 	evalMode string
 	code     string
+	file     string
+	fileArgs []string
 	fwd      []string
 	sub      string
 	subArgs  []string
@@ -265,6 +291,11 @@ func parseArgs(args []string) parsed {
 
 	for i := 0; i < len(args); {
 		t := args[i]
+		if p.file != "" {
+			p.fileArgs = append(p.fileArgs, t)
+			i++
+			continue
+		}
 		if strings.HasPrefix(t, "-") {
 			name := flagName(t)
 			dst, isRepld := repld[name]
@@ -291,6 +322,17 @@ func parseArgs(args []string) parsed {
 			p.fwd = append(p.fwd, t)
 			i++
 			continue
+		}
+		// File mode: the first interpreter token naming an existing regular file
+		// evals in-session; the rest of argv is its script args. No ext check
+		// (shebang/justfile temp scripts are extensionless); a missing path
+		// forwards as a launch arg; subcommand names need a ./ prefix.
+		if p.exe != "" && p.evalMode == "" && len(p.fwd) == 0 && !subcommands[t] {
+			if fi, err := os.Stat(t); err == nil && fi.Mode().IsRegular() {
+				p.file = t
+				i++
+				continue
+			}
 		}
 		if p.exe == "" && p.evalMode == "" && p.sub == "" && len(p.fwd) == 0 && !subcommands[t] {
 			p.exe = t
@@ -385,6 +427,8 @@ func main() {
 	switch {
 	case p.evalMode != "":
 		cmdEval(p.socket, lang, p.code, exe, p.session, p.evalMode == "print", p.fresh, p.trace, p.fwd)
+	case p.file != "":
+		cmdEvalFile(p.socket, lang, p.file, exe, p.session, p.fresh, p.trace, p.fileArgs, p.fwd)
 	case len(p.fwd) > 0:
 		cmdEval(p.socket, lang, "", exe, p.session, false, p.fresh, p.trace, p.fwd)
 	default:

@@ -64,21 +64,22 @@ func TestPythonSessionsAreKeyedByInterpreter(t *testing.T) {
 	require.Equal(t, "b\n", send(pyB, `print(x)`).stdout)
 }
 
-func TestPythonFileRunUsesMainAndPersistsState(t *testing.T) {
+func TestPythonFileEvalArgsAndState(t *testing.T) {
 	socketPath, _ := pythonTestDaemon(t)
 
 	cwd := t.TempDir()
 	script := filepath.Join(cwd, "script.py")
-	require.NoError(t, os.WriteFile(script, []byte(`if __name__ == "__main__":
-    marker = "ran-main"
+	require.NoError(t, os.WriteFile(script, []byte(`import sys
+print(",".join(sys.argv[1:]))
+marker = "v1"
 `), 0644))
 
-	// Forward the script as the program: it runs at launch as __main__, and its
-	// state is visible to later evals in the same warm session.
-	repldOK(t, socketPath, cwd, python.Adapter{}.DefaultExe(), script)
-
+	res := repldOK(t, socketPath, cwd, python.Adapter{}.DefaultExe(), script, "a", "b")
+	require.Equal(t, "a,b\n", res.stdout)
 	check := repldOK(t, socketPath, cwd, python.Adapter{}.DefaultExe(), "-c", "print(marker)")
-	require.Equal(t, "ran-main\n", check.stdout)
+	require.Equal(t, "v1\n", check.stdout)
+	argvCheck := repldOK(t, socketPath, cwd, python.Adapter{}.DefaultExe(), "-c", "import sys; print(sys.argv)")
+	require.NotContains(t, argvCheck.stdout, "script.py")
 }
 
 func TestCLIPythonEvalDoesNotLeakInteractivePrompts(t *testing.T) {

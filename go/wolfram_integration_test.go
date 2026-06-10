@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,4 +51,16 @@ func TestWolframAdapter(t *testing.T) {
 
 	res = repldOK(t, socketPath, cwd, "trace", "wolframscript")
 	require.Contains(t, res.stdout, "ToExpression::sntxi")
+
+	// File eval: args via Block-scoped $ScriptCommandLine, globals persist.
+	script := filepath.Join(cwd, "script.wl")
+	require.NoError(t, os.WriteFile(script,
+		[]byte("Print[\"hi from file\"]\nPrint[StringRiffle[Rest[$ScriptCommandLine], \",\"]]\nwlFileMarker = 55\n"), 0644))
+
+	res = repldOK(t, socketPath, cwd, "wolframscript", script, "a", "b")
+	require.Contains(t, lf(res.stdout), "hi from file")
+	require.Contains(t, lf(res.stdout), "a,b")
+
+	res = repldOK(t, socketPath, cwd, "wolframscript", "-c", "wlFileMarker")
+	require.Equal(t, "55\n", lf(res.stdout))
 }

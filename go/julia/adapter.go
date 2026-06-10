@@ -63,6 +63,24 @@ func (Adapter) WrapEval(hexCode string, printResult bool) string {
 	return fmt.Sprintf(`Main.JuliaClientRuntime.run("%s", %t)`, hexCode, printResult)
 }
 
+func (Adapter) EvalFileStmt(path string, args []string) string {
+	hexPath := hex.EncodeToString([]byte(path))
+	argElems := make([]string, len(args))
+	for i, a := range args {
+		argElems[i] = fmt.Sprintf(`String(hex2bytes("%s"))`, hex.EncodeToString([]byte(a)))
+	}
+	return fmt.Sprintf(`let _p = String(hex2bytes("%s")), _old = copy(ARGS), _oldpf = Base.PROGRAM_FILE
+    empty!(ARGS); append!(ARGS, AbstractString[%s])
+    Base.PROGRAM_FILE = _p
+    try
+        Base.include(Main, _p)
+    finally
+        empty!(ARGS); append!(ARGS, _old)
+        Base.PROGRAM_FILE = _oldpf
+    end
+end`, hexPath, strings.Join(argElems, ", "))
+}
+
 func (Adapter) SentinelStmt(sentinel string) string {
 	return fmt.Sprintf(`flush(stderr); println(stderr, "%s"); flush(stderr); println(stdout, "%s"); flush(stdout)`, sentinel, sentinel)
 }

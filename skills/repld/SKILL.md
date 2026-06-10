@@ -22,6 +22,10 @@ repld wolframscript -c 'Total[x]'
 
 repld --session scratch julia -E 'x = 1'  # named session across directories
 cd /tmp && repld --session scratch julia -E 'x'  # reuse existing named session
+
+# File mode: write/update scripts, then eval them in the warm session
+repld julia analysis.jl
+repld python3 train.py 50  # 50 → sys.argv[1]
 ```
 
 - Import packages once per session; later calls should use already-loaded names.

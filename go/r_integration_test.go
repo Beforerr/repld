@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,28 @@ func TestRAdapter(t *testing.T) {
 	res = repldOK(t, socketPath, cwd, "trace", "R")
 	require.Contains(t, res.stdout, "simpleError")
 	require.Contains(t, res.stdout, "boom")
+}
+
+func TestRFileEvalArgsAndState(t *testing.T) {
+	if _, err := exec.LookPath(r.Adapter{}.DefaultExe()); err != nil {
+		t.Skipf("%s not installed", r.Adapter{}.DefaultExe())
+	}
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd := t.TempDir()
+	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
+	script := filepath.Join(cwd, "script.R")
+	require.NoError(t, os.WriteFile(script,
+		[]byte("cat(commandArgs(trailingOnly=TRUE), \"\\n\")\nr_marker <<- 33\n"), 0644))
+
+	res := repldOK(t, socketPath, cwd, "R", script, "a", "b")
+	require.Equal(t, "a b \n", lf(res.stdout))
+	res = repldOK(t, socketPath, cwd, "R", "-e", "cat(r_marker)")
+	require.Equal(t, "33", lf(res.stdout))
+	res = repldOK(t, socketPath, cwd, "R", "-e",
+		`cat(exists("commandArgs", envir=globalenv(), inherits=FALSE))`)
+	require.Equal(t, "FALSE", lf(res.stdout))
 }
 
 func TestRInterruptSurvives(t *testing.T) {

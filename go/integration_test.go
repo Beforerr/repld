@@ -653,6 +653,30 @@ func TestCLIJuliaMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
 	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")
 }
 
+func TestJuliaFileEvalArgsAndState(t *testing.T) {
+	if _, err := exec.LookPath(julia.Adapter{}.DefaultExe()); err != nil {
+		t.Skipf("%s not installed", julia.Adapter{}.DefaultExe())
+	}
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd := t.TempDir()
+	script := filepath.Join(cwd, "script.jl")
+	write := func(body string) { require.NoError(t, os.WriteFile(script, []byte(body), 0644)) }
+	write("println(join(ARGS, \",\"))\nfile_marker = 11\n")
+
+	res := repldOK(t, socketPath, cwd, "julia", script, "a", "b")
+	require.Equal(t, "a,b\n", res.stdout)
+	check := repldOK(t, socketPath, cwd, "julia", "-e", "println(file_marker)")
+	require.Equal(t, "11\n", check.stdout)
+	check = repldOK(t, socketPath, cwd, "julia", "-e", "println(length(ARGS))")
+	require.Equal(t, "0\n", check.stdout)
+
+	write("println(\"edited\")\n")
+	res = repldOK(t, socketPath, cwd, "julia", script)
+	require.Equal(t, "edited\n", res.stdout)
+}
+
 func TestExecuteRawWithoutControlDoesNotPanic(t *testing.T) {
 	sess := newSession(julia.Adapter{}, "SENTINEL", nil, nil)
 	sess.stdin = &nopWriteCloser{}

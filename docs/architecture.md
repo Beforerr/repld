@@ -6,13 +6,20 @@ point here.
 
 ## CLI shape
 
-`repld [repld-flags] <exe> [interp-flags] -e/-c CODE`
+`repld [repld-flags] <exe> [interp-flags] (-e/-c CODE | <file> [script-args...])`
 
 The interpreter is an explicit leading positional. The language is resolved
 (`go/config.go: resolveLang`) from `--lang` > exe basename. repld's own flags
 (`--socket`/`--session`/`--lang`/`--trace`/`--fresh`) are recognized only
 *before* `<exe>`; anything after forwards verbatim to the interpreter, except the
 eval flag (`-e`/`-c`/`-E`), which repld captures.
+
+**File mode**: with no eval flag captured, the first non-flag positional after
+`<exe>` naming an existing regular file (no ext check; missing → launch arg;
+subcommand-named → `./` prefix) evals in-session; the rest of argv is its script
+args. Sent abs-ified as `protocolRequest.File`/`FileArgs`, never read client-side
+and never a launch arg: the daemon wraps it via `Adapter.EvalFileStmt` through
+the normal eval path, so it re-evals in the warm session on every call.
 
 The engine in `go/` is language-agnostic; per-language specifics live behind
 `Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, `go/r/`, and `go/wolfram/`. `langs`
@@ -86,7 +93,7 @@ session is a no-op.
 
 - `go/main.go` — CLI arg scanner (`parseArgs`: own flags vs forwarded switches), client send/receive
 - `go/config.go` — `langs` registry (name→adapter, eval/print flag spellings), `langForExe`/`resolveLang`, single socket path
-- `go/adapter.go` — `Adapter` interface: the language-execution seam (launch argv, runtime, eval wrap, sentinel)
+- `go/adapter.go` — `Adapter` interface: the language-execution seam (launch argv, runtime, eval wrap, sentinel, `EvalFileStmt` for in-session file eval)
 - `go/daemon.go` — request dispatch, idle watchdog, client-disconnect→interrupt watcher
 - `go/session.go` — `Session`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt, graceful `kill`
 - `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs
