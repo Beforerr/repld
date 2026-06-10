@@ -37,19 +37,12 @@ func (Adapter) LoadRuntimeStmt(hexSource string) string {
 	return fmt.Sprintf(`exec(bytes.fromhex("%s").decode())`, hexSource)
 }
 
-func (Adapter) WrapEval(hexCode string, printResult bool) string {
-	return fmt.Sprintf(`_repld_run("%s", %s)`, hexCode, pyBool(printResult))
+func (Adapter) WrapEval(hexCode string, _ bool) string {
+	return fmt.Sprintf(`_repld_run("%s")`, hexCode)
 }
 
 func (Adapter) SentinelStmt(sentinel string) string {
 	// Assign write() results to _ so the interactive interpreter never echoes the
 	// char counts (the no-op displayhook isn't set yet during startup drain).
 	return fmt.Sprintf(`import sys as _s; _ = _s.stderr.write("%s\n"); _s.stderr.flush(); _ = _s.stdout.write("%s\n"); _s.stdout.flush()`, sentinel, sentinel)
-}
-
-func pyBool(b bool) string {
-	if b {
-		return "True"
-	}
-	return "False"
 }

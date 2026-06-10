@@ -86,18 +86,12 @@ def _render_error(exc):
     return short, smart, full
 
 
-def _repld_run(hexcode, print_result):
+def _repld_run(hexcode):
     global _BUSY
     code = bytes.fromhex(hexcode).decode("utf-8", "surrogatepass")
     _BUSY = True
     try:
-        try:
-            value = eval(compile(code, _USER_FILE, "eval"), _NS)
-        except SyntaxError:
-            exec(compile(code, _USER_FILE, "exec"), _NS)
-            value = None
-        if print_result and value is not None:
-            sys.stdout.write(repr(value) + "\n")
+        exec(compile(code, _USER_FILE, "exec"), _NS)
         sys.stdout.flush()
         _write_control("OK")
     except BaseException as exc:  # noqa: BLE001 — KeyboardInterrupt is an interrupt
@@ -106,5 +100,3 @@ def _repld_run(hexcode, print_result):
         _write_control("ERR %s %s %s" % (_hex(short), _hex(smart), _hex(full)))
     finally:
         _BUSY = False
-
-

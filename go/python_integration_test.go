@@ -12,12 +12,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPythonAdapter(t *testing.T) {
-	if _, err := exec.LookPath(python.Adapter{}.DefaultExe()); err != nil {
+func pythonTestDaemon(t *testing.T) (socketPath, pythonExe string) {
+	t.Helper()
+	pythonExe, err := exec.LookPath(python.Adapter{}.DefaultExe())
+	if err != nil {
 		t.Skipf("%s not installed", python.Adapter{}.DefaultExe())
 	}
 	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	t.Cleanup(stop)
+	return socketPath, pythonExe
+}
+
+func TestPythonAdapter(t *testing.T) {
+	socketPath, _ := pythonTestDaemon(t)
 
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
@@ -35,15 +42,10 @@ func TestPythonAdapter(t *testing.T) {
 }
 
 func TestPythonSessionsAreKeyedByInterpreter(t *testing.T) {
-	pythonExe, err := exec.LookPath(python.Adapter{}.DefaultExe())
-	if err != nil {
-		t.Skipf("%s not installed", python.Adapter{}.DefaultExe())
-	}
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinked executable test is unix-only")
 	}
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath, pythonExe := pythonTestDaemon(t)
 
 	tmp := t.TempDir()
 	pyA := filepath.Join(tmp, "python-a")
@@ -63,11 +65,7 @@ func TestPythonSessionsAreKeyedByInterpreter(t *testing.T) {
 }
 
 func TestPythonFileRunUsesMainAndPersistsState(t *testing.T) {
-	if _, err := exec.LookPath(python.Adapter{}.DefaultExe()); err != nil {
-		t.Skipf("%s not installed", python.Adapter{}.DefaultExe())
-	}
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath, _ := pythonTestDaemon(t)
 
 	cwd := t.TempDir()
 	script := filepath.Join(cwd, "script.py")
@@ -84,8 +82,7 @@ func TestPythonFileRunUsesMainAndPersistsState(t *testing.T) {
 }
 
 func TestCLIPythonEvalDoesNotLeakInteractivePrompts(t *testing.T) {
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath, _ := pythonTestDaemon(t)
 
 	res := repldOK(t, socketPath, "", "python3", "-c", "x=1")
 	require.Empty(t, res.stdout)
@@ -93,11 +90,27 @@ func TestCLIPythonEvalDoesNotLeakInteractivePrompts(t *testing.T) {
 }
 
 func TestCLIPythonMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath, _ := pythonTestDaemon(t)
 
 	res := repldOK(t, socketPath, "", "python3", "x=1")
 	require.Contains(t, res.stderr, "can't open file")
 	require.NotContains(t, res.stderr, ">>>")
 	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")
+}
+
+func TestPythonTracebackLineNumbers(t *testing.T) {
+	socketPath, _ := pythonTestDaemon(t)
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	// Error on line 3; traceback must say line 3.
+	resp := sendRequest(t, socketPath, protocolRequest{
+		Action: "eval",
+		Lang:   "python",
+		Code:   "x = 1\ny = 2\nraise ValueError('line3error')",
+		Cwd:    cwd,
+	})
+	require.Contains(t, resp.Error, "line3error")
+	require.Contains(t, resp.Error, "line 3")
 }
