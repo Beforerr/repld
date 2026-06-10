@@ -232,15 +232,18 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 }
 
 func serveDaemon(socketPath string, idleTimeout time.Duration) error {
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
+	dir := filepath.Dir(socketPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
+	_ = os.Chmod(dir, 0700)
 	os.Remove(socketPath)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return err
 	}
+	_ = os.Chmod(socketPath, 0600)
 
 	pidPath := filepath.Join(filepath.Dir(socketPath), "daemon.pid")
 	os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0644)
