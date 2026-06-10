@@ -37,8 +37,8 @@ var langs = map[string]langConfig{
 	},
 	"wolfram": {
 		displayName: "Wolfram",
-		evalFlags:   []string{"c", "code"},
-		adapter:     wolfram.Adapter{},
+		printFlags: []string{"c", "code"},
+		adapter:    wolfram.Adapter{},
 	},
 }
 

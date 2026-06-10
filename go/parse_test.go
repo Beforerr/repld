@@ -49,7 +49,7 @@ func TestParseArgsRepld(t *testing.T) {
 	got = parseCLI([]string{"wolframscript", "-c", "1 + 1"})
 	require.Equal(t, "wolframscript", got.exe)
 	require.Equal(t, "wolfram", resolveLang(got))
-	require.Equal(t, "eval", got.evalMode)
+	require.Equal(t, "print", got.evalMode)
 }
 
 // TestParseArgsSeparable: repld's own flags are recognized only before the exe;

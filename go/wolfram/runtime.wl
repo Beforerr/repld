@@ -1,6 +1,10 @@
 repldDecode[hex_String] := FromCharacterCode[FromDigits[#, 16] & /@ StringPartition[hex, 2], "UTF-8"];
 repldHex[text_] := StringJoin[IntegerString[#, 16, 2] & /@ ToCharacterCode[ToString[text], "UTF-8"]];
 
+(* -script mode points $Messages at stdout; redirect so message text reaches
+   the user via stderr *)
+$Messages = {OutputStream["stderr", 2]};
+
 repldControl = Quiet @ Check[
   Module[{addr, token, parts, host, port, sock},
     addr = Environment["REPLD_CONTROL_ADDR"];
@@ -18,18 +22,39 @@ repldControl = Quiet @ Check[
 
 repldWriteControl[line_String] := If[Head[repldControl] === SocketObject, Quiet @ Check[WriteString[repldControl, line <> "\n"], Null]];
 
-repldRun[hex_String, printResult_] := Module[{code, result, failed = False, short},
-  code = repldDecode[hex];
-  result = Check[ToExpression[code, InputForm], failed = True; $Failed];
-  If[failed,
-    short = "ERROR: evaluation failed";
-    repldWriteControl["ERR " <> repldHex[short] <> " " <> repldHex[short <> "\n"] <> " " <> repldHex[short <> "\n"]];
-    ,
-    Print[result];
-    repldWriteControl["OK"];
-  ];
-  Flush[$Output];
-  Flush[$Messages];
+(* Messages don't imply failure in Wolfram (1/0 emits Power::infy yet returns
+   ComplexInfinity), so let them stream to stderr and only signal ERR on a
+   genuine failure *)
+repldRun[hex_String, printResult_] := Block[{$MessageList = {}},
+  Module[{code, raw, result, aborted = False, thrown = False, failed, msgs, short},
+    code = repldDecode[hex];
+    raw = CheckAbort[
+      Catch[
+        Catch[repld`Done[Quiet[ToExpression[code, InputForm], {}]]],
+        _,
+        (thrown = True; repld`Thrown[#1]) &
+      ],
+      aborted = True; repld`Done[$Failed]
+    ];
+    Which[
+      MatchQ[raw, repld`Done[_]], result = First[raw],
+      MatchQ[raw, repld`Thrown[_]], thrown = True; result = First[raw],
+      True, thrown = True; result = raw
+    ];
+    msgs = ToString /@ $MessageList;
+    failed = aborted || thrown || (result === $Failed);
+    If[failed,
+      short = "ERROR: " <> If[msgs === {}, "evaluation failed", StringRiffle[msgs, ", "]];
+      repldWriteControl["ERR " <> repldHex[short] <> " " <> repldHex[short <> "\n"] <> " " <> repldHex[short <> "\n"]];
+      ,
+      (* Match native `wolframscript -code`: print the result unconditionally,
+         Null included, in ToString/OutputForm (strings render unquoted). *)
+      If[printResult, WriteString[$Output, ToString[result] <> "\n"]];
+      repldWriteControl["OK"];
+    ];
+    Flush[$Output];
+    Flush[OutputStream["stderr", 2]];
+  ]
 ];
 
 While[True,

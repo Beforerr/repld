@@ -24,7 +24,7 @@ repld R -e 'library(stats); x <- rnorm(100)'
 repld R -e 'mean(x)'                    # reuses warm R session
 
 repld wolframscript -c 'x = Range[5]'
-repld wolframscript -c 'Total[x]'       # reuses warm Wolfram session
+repld wolframscript -c 'Total[x]'
 ```
 
 Per-language docs: [julia](skills/repld/references/julia.md) · [python](skills/repld/references/python.md) · [R](skills/repld/references/r.md) · [Wolfram](skills/repld/references/wolfram.md).
