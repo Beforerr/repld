@@ -189,24 +189,59 @@ func stripPythonPrompts(data string) string {
 	return data
 }
 
+type controlWinner struct {
+	conn net.Conn
+	br   *bufio.Reader
+}
+
+// Stray connection (port scanner, other process) can land before runtime dials back;
+// accepting only once would consume it and fail the handshake while the real
+// dial waits in the backlog.
 func acceptControl(ln net.Listener, token string, timeoutSecs float64) (net.Conn, *bufio.Reader) {
 	deadline := time.Now().Add(time.Duration(timeoutSecs * float64(time.Second)))
 	if tl, ok := ln.(*net.TCPListener); ok {
 		tl.SetDeadline(deadline)
 	}
-	conn, err := ln.Accept()
-	if err != nil {
+	won := make(chan controlWinner, 1)
+	authed := func(conn net.Conn) {
+		br := bufio.NewReaderSize(conn, 64*1024*1024)
+		rd := deadline
+		if soon := time.Now().Add(2 * time.Second); soon.Before(rd) {
+			rd = soon
+		}
+		conn.SetReadDeadline(rd)
+		line, err := br.ReadString('\n')
+		if err != nil || strings.TrimRight(line, "\r\n") != token {
+			conn.Close()
+			return
+		}
+		conn.SetReadDeadline(time.Time{})
+		select {
+		case won <- controlWinner{conn, br}:
+			ln.Close()
+		default:
+			conn.Close()
+		}
+	}
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			break // deadline, or listener closed by the winning goroutine
+		}
+		go authed(conn)
+		// A winner closes ln, so next Accept returns and ends loop
+		select {
+		case w := <-won:
+			return w.conn, w.br
+		default:
+		}
+	}
+	select {
+	case w := <-won:
+		return w.conn, w.br
+	default:
 		return nil, nil
 	}
-	br := bufio.NewReaderSize(conn, 64*1024*1024)
-	conn.SetReadDeadline(deadline)
-	line, err := br.ReadString('\n')
-	if err != nil || strings.TrimRight(line, "\r\n") != token {
-		conn.Close()
-		return nil, nil
-	}
-	conn.SetReadDeadline(time.Time{})
-	return conn, br
 }
 
 func (s *Session) isAlive() bool {

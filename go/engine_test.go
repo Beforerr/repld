@@ -1,13 +1,65 @@
 package main
 
 import (
+	"net"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Beforerr/repld/go/julia"
 	"github.com/Beforerr/repld/go/python"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAcceptControl(t *testing.T) {
+	const token = "tok-correct"
+
+	t.Run("valid wins over earlier stray", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		addr := ln.Addr().String()
+		
+		stray, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		defer stray.Close()
+
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			c, derr := net.Dial("tcp", addr)
+			require.NoError(t, derr)
+			c.Write([]byte(token + "\n"))
+			// Runtime side writes the first control frame after authenticating.
+			c.Write([]byte("OK\n"))
+		}()
+
+		conn, br := acceptControl(ln, token, 2.0)
+		require.NotNil(t, conn)
+		require.NotNil(t, br)
+		defer conn.Close()
+		line, err := br.ReadString('\n')
+		require.NoError(t, err)
+		require.Equal(t, "OK\n", line)
+	})
+
+	t.Run("only wrong tokens times out to nil", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		addr := ln.Addr().String()
+
+		for i := 0; i < 3; i++ {
+			c, derr := net.Dial("tcp", addr)
+			require.NoError(t, derr)
+			c.Write([]byte("wrong\n"))
+			defer c.Close()
+		}
+
+		start := time.Now()
+		conn, br := acceptControl(ln, token, 0.5)
+		require.Nil(t, conn)
+		require.Nil(t, br)
+		require.Less(t, time.Since(start), 2*time.Second)
+	})
+}
 
 func TestHandleRequest_Ping(t *testing.T) {
 	resp := handleRequest(newTestState(), protocolRequest{Action: "ping"})
