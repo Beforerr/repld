@@ -12,31 +12,26 @@ import (
 )
 
 type langConfig struct {
-	displayName string
-	evalFlags   []string
-	printFlags  []string
-	adapter     Adapter
+	evalFlags  []string
+	printFlags []string
+	adapter    Adapter
 }
 
 var langs = map[string]langConfig{
 	"julia": {
-		displayName: "Julia",
-		evalFlags:   []string{"e", "eval"},
-		printFlags:  []string{"E", "print"},
-		adapter:     julia.Adapter{},
+		evalFlags:  []string{"e", "eval"},
+		printFlags: []string{"E", "print"},
+		adapter:    julia.Adapter{},
 	},
 	"python": {
-		displayName: "Python",
-		evalFlags:   []string{"c", "command"},
-		adapter:     python.Adapter{},
+		evalFlags: []string{"c", "command"},
+		adapter:   python.Adapter{},
 	},
 	"r": {
-		displayName: "R",
-		evalFlags:   []string{"e", "eval"},
-		adapter:     r.Adapter{},
+		evalFlags: []string{"e", "eval"},
+		adapter:   r.Adapter{},
 	},
 	"wolfram": {
-		displayName: "Wolfram",
 		printFlags: []string{"c", "code"},
 		adapter:    wolfram.Adapter{},
 	},
