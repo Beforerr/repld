@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -32,12 +33,15 @@ type Session struct {
 	control     *bufio.Reader
 	controlConn net.Conn
 	exited      chan struct{}
-	mu          sync.Mutex
+	mu          sync.Mutex      // guards startup
+	sem         chan struct{}   // capacity-1: serialises evals, ctx-cancellable acquire
 
 	dead      atomic.Bool
 	busySince atomic.Int64
 	logFile   *os.File
 	startup   []startupChunk
+
+	controlAcceptTimeout float64 // seconds to wait for the runtime's control dial-back
 }
 
 type startupChunk struct {
@@ -53,10 +57,12 @@ func newSentinel() string {
 
 func newSession(adapter Adapter, sentinel string, fwd []string, logFile *os.File) *Session {
 	return &Session{
-		adapter:  adapter,
-		sentinel: sentinel,
-		fwd:      fwd,
-		logFile:  logFile,
+		adapter:              adapter,
+		sentinel:             sentinel,
+		fwd:                  fwd,
+		logFile:              logFile,
+		controlAcceptTimeout: startupTimeout,
+		sem:                  make(chan struct{}, 1),
 	}
 }
 
@@ -139,7 +145,7 @@ func (s *Session) start(exe string, workDir string) error {
 	controlReady := make(chan struct{})
 	go func() {
 		defer close(controlReady)
-		if conn, br := acceptControl(ln, token, startupTimeout); conn != nil {
+		if conn, br := acceptControl(ln, token, s.controlAcceptTimeout); conn != nil {
 			s.controlConn = conn
 			s.control = br
 		}
@@ -166,6 +172,13 @@ func (s *Session) start(exe string, workDir string) error {
 		return fmt.Errorf("failed to load runtime: %w", err)
 	}
 	<-controlReady
+	// Without the control channel every eval would fail with "control channel
+	// unavailable" yet the session would stay alive and keep being reused (no
+	// self-heal). Fail startup instead so the next call recreates it.
+	if s.control == nil {
+		s.kill()
+		return fmt.Errorf("control channel handshake did not complete")
+	}
 	return nil
 }
 
@@ -201,6 +214,8 @@ func (s *Session) isAlive() bool {
 }
 
 func (s *Session) drainStartup() []startupChunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	chunks := s.startup
 	s.startup = nil
 	return chunks
@@ -374,13 +389,28 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 	}
 }
 
-func (s *Session) execute(code string, printResult bool, onChunk func(data string, isStderr bool)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// execute runs one eval to completion. Binding cancellation to ctx (caller's lifetime)
+func (s *Session) execute(ctx context.Context, code string, printResult bool, onChunk func(data string, isStderr bool)) error {
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-s.sem }()
 
 	if s.dead.Load() {
 		return fmt.Errorf("session has died unexpectedly")
 	}
+
+	evalDone := make(chan struct{})
+	defer close(evalDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.interrupt(3.0)
+		case <-evalDone:
+		}
+	}()
 
 	hexCode := hex.EncodeToString([]byte(code))
 	wrapped := s.adapter.WrapEval(hexCode, printResult)

@@ -68,5 +68,9 @@ func langForExe(exe string) string {
 func adapterFor(lang string) Adapter { return langs[lang].adapter }
 
 func defaultSocketPath() string {
-	return filepath.Join(os.Getenv("HOME"), ".local", "share", "repld", "daemon.sock")
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.TempDir()
+	}
+	return filepath.Join(home, ".local", "share", "repld", "daemon.sock")
 }
