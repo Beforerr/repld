@@ -83,7 +83,10 @@ func (s *Session) start(exe string, workDir string) error {
 		exe = resolved
 	}
 
-	args := s.adapter.LaunchArgs(s.fwd)
+	args, err := s.adapter.LaunchArgs(s.fwd)
+	if err != nil {
+		return fmt.Errorf("interpreter startup failed: %w", err)
+	}
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = workDir
 

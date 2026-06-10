@@ -4,7 +4,7 @@ package main
 type Adapter interface {
 	DefaultExe() string
 
-	LaunchArgs(forwarded []string) []string
+	LaunchArgs(forwarded []string) ([]string, error)
 
 	// BootstrapStmt loads the embedded runtime.
 	BootstrapStmt() string

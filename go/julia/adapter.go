@@ -15,7 +15,7 @@ type Adapter struct{}
 
 func (Adapter) DefaultExe() string { return "julia" }
 
-func (Adapter) LaunchArgs(forwarded []string) []string {
+func (Adapter) LaunchArgs(forwarded []string) ([]string, error) {
 	var args []string
 	rest := forwarded
 	// A juliaup channel (+x) must be first argument.
@@ -28,7 +28,7 @@ func (Adapter) LaunchArgs(forwarded []string) []string {
 		args = append(args, "--project=@.")
 	}
 	args = append(args, rest...)
-	return args
+	return args, nil
 }
 
 func hasProject(args []string) bool {

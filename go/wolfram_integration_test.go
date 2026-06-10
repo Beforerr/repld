@@ -11,6 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestWolframRuntimeScriptReusedAndRestored(t *testing.T) {
+	script := func() string {
+		args, err := wolfram.Adapter{}.LaunchArgs(nil)
+		require.NoError(t, err)
+		return args[len(args)-1]
+	}
+	path := script()
+	require.Equal(t, path, script())
+
+	require.NoError(t, os.Remove(path))
+	restored := script()
+	data, err := os.ReadFile(restored)
+	require.NoError(t, err)
+	require.Contains(t, string(data), "REPLD_EVAL")
+}
+
 func TestWolframAdapter(t *testing.T) {
 	if _, err := exec.LookPath(wolfram.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", wolfram.Adapter{}.DefaultExe())

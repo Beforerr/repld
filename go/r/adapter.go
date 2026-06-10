@@ -15,8 +15,8 @@ type Adapter struct{}
 
 func (Adapter) DefaultExe() string { return "R" }
 
-func (Adapter) LaunchArgs(forwarded []string) []string {
-	return append([]string{"--slave", "--no-save", "--no-restore"}, forwarded...)
+func (Adapter) LaunchArgs(forwarded []string) ([]string, error) {
+	return append([]string{"--slave", "--no-save", "--no-restore"}, forwarded...), nil
 }
 
 func (Adapter) BootstrapStmt() string {

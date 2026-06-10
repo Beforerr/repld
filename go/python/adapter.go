@@ -21,9 +21,9 @@ func (Adapter) DefaultExe() string {
 	return "python3"
 }
 
-func (Adapter) LaunchArgs(forwarded []string) []string {
+func (Adapter) LaunchArgs(forwarded []string) ([]string, error) {
 	args := append([]string{"-u", "-q", "-i"}, forwarded...)
-	return append(args, "-c", bootstrapExec())
+	return append(args, "-c", bootstrapExec()), nil
 }
 
 func bootstrapExec() string {

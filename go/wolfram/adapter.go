@@ -7,25 +7,56 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 //go:embed runtime.wl
 var runtimeSource string
 
+// wolframscript reads the script at launch, so one file serves every session;
+// per-launch files would leak, since nothing tracks when wolframscript is done
+// with them. Rewritten if missing: tmp cleaners can remove it under a
+// long-lived daemon.
+var script struct {
+	sync.Mutex
+	path string
+}
+
+func runtimeScript() (string, error) {
+	script.Lock()
+	defer script.Unlock()
+	if script.path != "" {
+		if _, err := os.Stat(script.path); err == nil {
+			return script.path, nil
+		}
+	}
+	f, err := os.CreateTemp("", "repld-wolfram-runtime-*.wls")
+	if err != nil {
+		return "", fmt.Errorf("create Wolfram runtime script: %w", err)
+	}
+	_, err = f.WriteString(strings.ReplaceAll(strings.ReplaceAll(runtimeSource, "\r\n", "\n"), "\r", "\n"))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("write Wolfram runtime script: %w", err)
+	}
+	script.path = f.Name()
+	return script.path, nil
+}
+
 type Adapter struct{}
 
 func (Adapter) DefaultExe() string { return "wolframscript" }
 
-func (Adapter) LaunchArgs(forwarded []string) []string {
-	source := strings.ReplaceAll(strings.ReplaceAll(runtimeSource, "\r\n", "\n"), "\r", "\n")
-	f, err := os.CreateTemp("", "repld-wolfram-*.wls")
+func (Adapter) LaunchArgs(forwarded []string) ([]string, error) {
+	path, err := runtimeScript()
 	if err != nil {
-		return []string{"-code", `Print["repld: failed to create Wolfram runtime script"]`}
+		return nil, err
 	}
-	_, _ = f.WriteString(source)
-	_ = f.Close()
 	args := append([]string{}, forwarded...)
-	return append(args, "-script", f.Name())
+	return append(args, "-script", path), nil
 }
 
 func (Adapter) BootstrapStmt() string { return "" }
