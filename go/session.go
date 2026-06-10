@@ -134,8 +134,8 @@ func (s *Session) start(exe string, workDir string) error {
 
 	s.proc = cmd
 	s.stdin = stdin
-	s.stdout = bufio.NewReaderSize(outR, 64*1024*1024)
-	s.stderr = bufio.NewReaderSize(errR, 64*1024*1024)
+	s.stdout = bufio.NewReaderSize(outR, 64*1024)
+	s.stderr = bufio.NewReaderSize(errR, 64*1024)
 
 	s.exited = make(chan struct{})
 	go func() { cmd.Wait(); close(s.exited) }()
@@ -203,7 +203,7 @@ func acceptControl(ln net.Listener, token string, timeoutSecs float64) (net.Conn
 	}
 	won := make(chan controlWinner, 1)
 	authed := func(conn net.Conn) {
-		br := bufio.NewReaderSize(conn, 64*1024*1024)
+		br := bufio.NewReaderSize(conn, 64*1024)
 		rd := deadline
 		if soon := time.Now().Add(2 * time.Second); soon.Before(rd) {
 			rd = soon
