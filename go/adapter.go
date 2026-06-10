@@ -9,8 +9,8 @@ type Adapter interface {
 	// SessionKey separates environments: project, interpreter, or runtime identity.
 	SessionKey(exe string, forwarded []string) string
 
-	RuntimeSource() string
-	LoadRuntimeStmt(hexSource string) string
+	// BootstrapStmt loads the embedded runtime.
+	BootstrapStmt() string
 	WrapEval(hexCode string, printResult bool) string
 
 	// SentinelStmt is the stdout/stderr drain barrier.

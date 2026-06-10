@@ -3,6 +3,7 @@ package python
 
 import (
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"runtime"
 )
@@ -31,10 +32,8 @@ func (a Adapter) SessionKey(exe string, _ []string) string {
 	return exe
 }
 
-func (Adapter) RuntimeSource() string { return runtimeSource }
-
-func (Adapter) LoadRuntimeStmt(hexSource string) string {
-	return fmt.Sprintf(`exec(bytes.fromhex("%s").decode())`, hexSource)
+func (Adapter) BootstrapStmt() string {
+	return fmt.Sprintf(`exec(bytes.fromhex("%s").decode())`, hex.EncodeToString([]byte(runtimeSource)))
 }
 
 func (Adapter) WrapEval(hexCode string, _ bool) string {

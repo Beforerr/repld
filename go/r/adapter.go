@@ -25,9 +25,7 @@ func (a Adapter) SessionKey(exe string, _ []string) string {
 	return exe
 }
 
-func (Adapter) RuntimeSource() string { return runtimeSource }
-
-func (Adapter) LoadRuntimeStmt(_ string) string {
+func (Adapter) BootstrapStmt() string {
 	source := strings.ReplaceAll(strings.ReplaceAll(runtimeSource, "\r\n", "\n"), "\r", "\n")
 	return fmt.Sprintf(`eval(parse(text = %s), envir = .GlobalEnv)`, strconv.Quote(source))
 }

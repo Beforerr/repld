@@ -34,9 +34,7 @@ func (a Adapter) SessionKey(exe string, _ []string) string {
 	return exe
 }
 
-func (Adapter) RuntimeSource() string { return "" }
-
-func (Adapter) LoadRuntimeStmt(_ string) string { return "" }
+func (Adapter) BootstrapStmt() string { return "" }
 
 func (Adapter) WrapEval(hexCode string, printResult bool) string {
 	return fmt.Sprintf("REPLD_EVAL %s %s", hexCode, wlBool(printResult))

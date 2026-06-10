@@ -3,6 +3,7 @@ package julia
 
 import (
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -54,10 +55,8 @@ func projectOf(args []string) string {
 	return ""
 }
 
-func (Adapter) RuntimeSource() string { return runtimeSource }
-
-func (Adapter) LoadRuntimeStmt(hexSource string) string {
-	return fmt.Sprintf(`include_string(Main, String(hex2bytes("%s")), "repld runtime")`, hexSource)
+func (Adapter) BootstrapStmt() string {
+	return fmt.Sprintf(`include_string(Main, String(hex2bytes("%s")), "repld runtime")`, hex.EncodeToString([]byte(runtimeSource)))
 }
 
 func (Adapter) WrapEval(hexCode string, printResult bool) string {

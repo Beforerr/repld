@@ -165,10 +165,11 @@ func (s *Session) start(exe string, workDir string) error {
 		return fmt.Errorf("interpreter startup failed: %w", err)
 	}
 	s.startup = startup
-	runtimeHex := hex.EncodeToString([]byte(s.adapter.RuntimeSource()))
-	if _, err := s.executeRaw(s.adapter.LoadRuntimeStmt(runtimeHex), nil, false, startupTimeout); err != nil {
-		s.kill()
-		return fmt.Errorf("failed to load runtime: %w", err)
+	if bs := s.adapter.BootstrapStmt(); bs != "" {
+		if _, err := s.executeRaw(bs, nil, false, startupTimeout); err != nil {
+			s.kill()
+			return fmt.Errorf("failed to load runtime: %w", err)
+		}
 	}
 	<-controlReady
 	// Without the control channel every eval would fail with "control channel
