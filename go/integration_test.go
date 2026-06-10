@@ -164,6 +164,64 @@ func TestDaemonPingOverSocket(t *testing.T) {
 	require.Equal(t, "pong", resp.Output)
 }
 
+func tempSocketPath(t *testing.T) string {
+	t.Helper()
+	base := "/tmp"
+	if runtime.GOOS == "windows" {
+		base = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(base, "repld-test-")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "test.sock")
+}
+
+// A crashed daemon leaves a socket file with no listener. serveDaemon must treat
+// it as stale: remove and bind, not give up.
+func TestServeDaemonReplacesStaleSocket(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	// Bind then close WITHOUT removing: the file lingers but nothing listens.
+	stale, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	addr := stale.Addr().(*net.UnixAddr)
+	require.NoError(t, stale.Close())
+	if _, err := os.Stat(addr.Name); err != nil {
+		require.NoError(t, os.WriteFile(socketPath, []byte("stale"), 0600))
+	}
+	require.False(t, pingDaemon(socketPath), "stale socket must not answer ping")
+
+	errCh := make(chan error, 1)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() { defer wg.Done(); errCh <- serveDaemon(socketPath, time.Hour) }()
+	// Poll on ping, not file existence: a pre-existing stale file passes os.Stat
+	// before the daemon swaps in its real socket.
+	require.Eventually(t, func() bool { return pingDaemon(socketPath) }, 15*time.Second, 20*time.Millisecond)
+
+	resp := sendRequest(t, socketPath, protocolRequest{Action: "ping"})
+	require.Equal(t, "pong", resp.Output)
+
+	conn, _ := net.Dial("unix", socketPath)
+	json.NewEncoder(conn).Encode(protocolRequest{Action: "stop"})
+	conn.Close()
+	wg.Wait()
+	require.NoError(t, <-errCh)
+}
+
+func TestServeDaemonRefusesLiveDaemon(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+
+	err := serveDaemon(socketPath, time.Hour)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already running")
+
+	// First daemon's socket survived
+	resp := sendRequest(t, socketPath, protocolRequest{Action: "ping"})
+	require.Equal(t, "pong", resp.Output)
+
+	stop()
+}
+
 // ---- Julia integration ----
 func TestJuliaWarmSession(t *testing.T) {
 	socketPath, stop, _ := startTestDaemon(t)

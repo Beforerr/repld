@@ -231,15 +231,49 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	emit(streamFrame{Done: true})
 }
 
+func pingDaemon(socketPath string) bool {
+	conn, err := net.DialTimeout("unix", socketPath, time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if err := json.NewEncoder(conn).Encode(protocolRequest{Action: "ping"}); err != nil {
+		return false
+	}
+	var resp response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		return false
+	}
+	return resp.Output == "pong"
+}
+
+// listenExclusive binds the socket without stealing a live daemon's
+func listenExclusive(socketPath string) (net.Listener, error) {
+	for attempt := range 3 {
+		ln, err := net.Listen("unix", socketPath)
+		if err == nil {
+			return ln, nil
+		}
+		if pingDaemon(socketPath) {
+			return nil, fmt.Errorf("another repld daemon is already running on %s", socketPath)
+		}
+		// Stale socket from a crashed daemon (or a non-socket file): drop it and retry.
+		if attempt < 2 {
+			os.Remove(socketPath)
+		}
+	}
+	return nil, fmt.Errorf("could not bind repld socket %s (raced with another daemon)", socketPath)
+}
+
 func serveDaemon(socketPath string, idleTimeout time.Duration) error {
 	dir := filepath.Dir(socketPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	_ = os.Chmod(dir, 0700)
-	os.Remove(socketPath)
 
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := listenExclusive(socketPath)
 	if err != nil {
 		return err
 	}
