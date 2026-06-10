@@ -200,9 +200,12 @@ func (m *SessionManager) interrupt(lang, session, cwd, disc string, graceSecs fl
 	if sess == nil {
 		return "", fmt.Errorf("no session for %s", key)
 	}
-	survived, err := sess.interrupt(graceSecs)
+	survived, idle, err := sess.interrupt(graceSecs)
 	if err != nil {
 		return "", err
+	}
+	if idle {
+		return fmt.Sprintf("Session %s idle; nothing to interrupt.", key), nil
 	}
 	if !survived {
 		m.mu.Lock()

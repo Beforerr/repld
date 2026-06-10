@@ -36,7 +36,7 @@ See [references/julia.md](references/julia.md) for Julia-specific notes.
 
 ```bash
 repld trace --session scratch               # last saved traceback, no rerun
-repld interrupt --session scratch           # interrupt stuck eval; state preserved if runtime survives
+repld interrupt --session scratch           # interrupt stuck eval; state kept on Julia/Python/R, Wolfram = kill
 repld sessions                              # list active sessions
 repld stop                                  # shut down daemon
 

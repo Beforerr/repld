@@ -15,4 +15,8 @@ type Adapter interface {
 
 	// SentinelStmt is the stdout/stderr drain barrier.
 	SentinelStmt(sentinel string) string
+
+	// InterruptViaControl reports whether the runtime listens on the control socket for interrupts.
+	// If false, the runtime is interrupted via process SIGINT.
+	InterruptViaControl() bool
 }

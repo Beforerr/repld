@@ -14,3 +14,7 @@ func sysProcAttrDetach() *syscall.SysProcAttr {
 func terminateProc(p *os.Process) error {
 	return p.Signal(syscall.SIGTERM)
 }
+
+func interruptProc(p *os.Process) error {
+	return p.Signal(syscall.SIGINT)
+}

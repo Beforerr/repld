@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -524,32 +523,28 @@ func (s *Session) closeResources() {
 	}
 }
 
-func (s *Session) interrupt(graceSecs float64) (survived bool, err error) {
+func (s *Session) interrupt(graceSecs float64) (survived bool, idle bool, err error) {
 	if !s.isAlive() {
-		return false, fmt.Errorf("session is not alive")
+		return false, false, fmt.Errorf("session is not alive")
 	}
 	if s.proc == nil || s.proc.Process == nil {
-		return false, fmt.Errorf("session has no process")
+		return false, false, fmt.Errorf("session has no process")
 	}
 	if s.busySince.Load() == 0 {
-		return true, nil
+		return true, true, nil
 	}
 	// A single interrupt can be silently lost: scheduling the InterruptException
-	// onto the eval task races with the wakeup of whatever it's blocked on (e.g.
-	// the timer behind `sleep`), and the exception sometimes never lands. So we
-	// resend on a slow cadence until the call returns. The runtime clears its
-	// target task once the eval ends, so any late byte is a no-op; the cadence is
-	// well below the listener's drain rate, so no backlog leaks into a next eval.
+	// onto the eval task races with the wakeup of whatever it's blocked on, and
+	// exception sometimes never lands.
+	useControl := s.controlConn != nil && s.adapter.InterruptViaControl()
 	signal := func() error {
-		if s.controlConn != nil {
+		if useControl {
 			_, werr := s.controlConn.Write([]byte{'\n'})
 			return werr
 		}
-		return s.proc.Process.Signal(syscall.SIGINT)
+		return interruptProc(s.proc.Process)
 	}
-	if err := signal(); err != nil {
-		return false, err
-	}
+	_ = signal()
 	deadline := time.After(time.Duration(float64(time.Second) * graceSecs))
 	poll := time.NewTicker(50 * time.Millisecond)
 	defer poll.Stop()
@@ -561,14 +556,14 @@ func (s *Session) interrupt(graceSecs float64) (survived bool, err error) {
 			s.proc.Process.Kill()
 			<-s.exited
 			s.dead.Store(true)
-			return false, nil
+			return false, false, nil
 		case <-resend.C:
 			if s.busySince.Load() != 0 {
 				_ = signal()
 			}
 		case <-poll.C:
 			if s.busySince.Load() == 0 {
-				return s.isAlive(), nil
+				return s.isAlive(), false, nil
 			}
 		}
 	}

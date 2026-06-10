@@ -46,3 +46,5 @@ func (Adapter) SentinelStmt(sentinel string) string {
 	// char counts (the no-op displayhook isn't set yet during startup drain).
 	return fmt.Sprintf(`import sys as _s; _ = _s.stderr.write("%s\n"); _s.stderr.flush(); _ = _s.stdout.write("%s\n"); _s.stdout.flush()`, sentinel, sentinel)
 }
+
+func (Adapter) InterruptViaControl() bool { return true }

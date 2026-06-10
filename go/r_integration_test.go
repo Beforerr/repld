@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Beforerr/repld/go/r"
 	"github.com/stretchr/testify/require"
@@ -37,4 +40,57 @@ func TestRAdapter(t *testing.T) {
 	res = repldOK(t, socketPath, cwd, "trace", "R")
 	require.Contains(t, res.stdout, "simpleError")
 	require.Contains(t, res.stdout, "boom")
+}
+
+func TestRInterruptSurvives(t *testing.T) {
+	if _, err := exec.LookPath(r.Adapter{}.DefaultExe()); err != nil {
+		t.Skipf("%s not installed", r.Adapter{}.DefaultExe())
+	}
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	// Set state that must survive interrupt.
+	repldOK(t, socketPath, cwd, "--session", "rirq", "R", "-e", "x <- 1")
+
+	cmd := exec.Command(os.Args[0], "--socket", socketPath, "--session", "rirq", "R", "-e", "Sys.sleep(60)")
+	cmd.Env = append(os.Environ(), "TEST_CLI=1")
+	cmd.Dir = cwd
+	var sleepStdout, sleepStderr bytes.Buffer
+	cmd.Stdout = &sleepStdout
+	cmd.Stderr = &sleepStderr
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	var sessOut string
+	for time.Now().Before(deadline) {
+		sessOut = repldOK(t, socketPath, cwd, "sessions").stdout
+		if strings.Contains(sessOut, "busy=") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.Contains(t, sessOut, "busy=", "sessions listing should show busy= while a call is in flight")
+
+	irq := repldOK(t, socketPath, cwd, "interrupt", "--session", "rirq")
+	require.Contains(t, irq.stdout, "interrupted", "R must survive SIGINT, got: %q", irq.stdout)
+	require.NotContains(t, irq.stdout, "killed")
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "interrupted call did not return")
+	}
+
+	after := repldOK(t, socketPath, cwd, "--session", "rirq", "R", "-e", "cat(x)")
+	require.Equal(t, "1", strings.ReplaceAll(after.stdout, "\r\n", "\n"), "pre-interrupt state must persist")
 }

@@ -40,6 +40,11 @@ func (Adapter) SentinelStmt(sentinel string) string {
 	return fmt.Sprintf(`cat("%s\n", file=stderr()); flush(stderr()); cat("%s\n"); flush(stdout())`, sentinel, sentinel)
 }
 
+// InterruptViaControl is false: the R runtime does not read the control socket
+// for interrupts. The engine delivers SIGINT, caught by .repld_run's interrupt
+// handler (R survives SIGINT in non-interactive --slave mode).
+func (Adapter) InterruptViaControl() bool { return false }
+
 func rBool(b bool) string {
 	if b {
 		return "TRUE"

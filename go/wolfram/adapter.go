@@ -46,6 +46,10 @@ func (Adapter) SentinelStmt(sentinel string) string {
 	return "REPLD_SENT " + strconv.Quote(sentinel)
 }
 
+// InterruptViaControl is false. wolframscript proxies to a kernel that does not
+// usefully abort a running evaluation on SIGINT, so interrupt = session kill.
+func (Adapter) InterruptViaControl() bool { return false }
+
 func wlBool(b bool) string {
 	if b {
 		return "True"

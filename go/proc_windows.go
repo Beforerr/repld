@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"syscall"
 )
@@ -13,4 +14,10 @@ func sysProcAttrDetach() *syscall.SysProcAttr {
 
 func terminateProc(p *os.Process) error {
 	return p.Kill() // Windows has no SIGTERM; fall straight to a hard kill
+}
+
+// Windows cannot deliver console interrupt to detached children
+// without console-attach gymnastics.
+func interruptProc(_ *os.Process) error {
+	return fmt.Errorf("interrupt signal not supported on windows")
 }

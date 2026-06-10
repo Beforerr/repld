@@ -67,3 +67,5 @@ func (Adapter) WrapEval(hexCode string, printResult bool) string {
 func (Adapter) SentinelStmt(sentinel string) string {
 	return fmt.Sprintf(`flush(stderr); println(stderr, "%s"); flush(stderr); println(stdout, "%s"); flush(stdout)`, sentinel, sentinel)
 }
+
+func (Adapter) InterruptViaControl() bool { return true }

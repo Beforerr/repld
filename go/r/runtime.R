@@ -81,6 +81,18 @@
       .repld_hex(rendered[[2L]]),
       .repld_hex(rendered[[3L]])
     ))
+  # R has no control-socket interrupt listener; the engine delivers SIGINT, which
+  # raises an "interrupt" condition (NOT caught by error=). Catch it here so the
+  # eval aborts but the read loop survives to emit the sentinel and stay reusable.
+  }, interrupt = function(cond) {
+    flush(stdout())
+    short <- "ERROR: interrupted"
+    .repld_write_control(paste(
+      "ERR",
+      .repld_hex(short),
+      .repld_hex(paste0(short, "\n")),
+      .repld_hex(paste0(short, "\n"))
+    ))
   })
   invisible(NULL)
 }

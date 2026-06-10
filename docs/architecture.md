@@ -64,6 +64,24 @@ Invariants:
 - `start()` blocks until the control conn is accepted (or times out) before the
   first eval; startup calls pass `expectControl=false` (no `run()`, no frame).
 
+## Interrupt
+
+`Session.interrupt` aborts an in-flight eval, then resends on a slow cadence
+(the signal can be silently lost racing the blocked-on wakeup) until the eval
+returns or a grace deadline kills the session. The signal path is per-language
+(`Adapter.InterruptViaControl`):
+
+- **Julia / Python** — listen for an interrupt byte on the control socket and
+  turn it into a catchable in-eval interrupt (InterruptException / KeyboardInterrupt).
+  Session survives with state intact.
+- **R** — no control listener; the engine sends process `SIGINT`, which R in
+  `--slave` non-interactive mode survives.
+- **Wolfram** — does not usefully abort a running evaluation on SIGINT; interrupt
+  kills the session (state lost).
+
+SIGINT delivery failure degrades to the kill-after-grace path. Interrupting an idle
+session is a no-op.
+
 ## Key files
 
 - `go/main.go` — CLI arg scanner (`parseArgs`: own flags vs forwarded switches), client send/receive

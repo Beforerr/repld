@@ -481,6 +481,22 @@ func TestInterruptBusyAndUnblocks(t *testing.T) {
 	require.Equal(t, "1234", after.stdout, "pre-interrupt state must persist")
 }
 
+func TestInterruptIdleSession(t *testing.T) {
+	socketPath, stop, _ := startTestDaemon(t)
+	defer stop()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+
+	repldOK(t, socketPath, cwd, "--session", "idle", "julia", "-e", "marker = 7")
+
+	irq := repldOK(t, socketPath, cwd, "interrupt", "--session", "idle")
+	require.Contains(t, irq.stdout, "nothing to interrupt")
+
+	after := repldOK(t, socketPath, cwd, "--session", "idle", "julia", "-e", "print(marker)")
+	require.Equal(t, "7", after.stdout, "idle interrupt must not disturb the session")
+}
+
 // covers `timeout 30 repld ...` scenario
 func TestClientDisconnectInterruptsEval(t *testing.T) {
 	socketPath, stop, _ := startTestDaemon(t)
