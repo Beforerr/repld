@@ -1,5 +1,7 @@
 # repld
 
+[![codecov](https://codecov.io/gh/Beforerr/repld/branch/main/graph/badge.svg)](https://codecov.io/gh/Beforerr/repld)
+
 Stateful and persistent REPL-like kernel for fast incremental iteration (Act → observe → adjust). CLI/agent-first design.
 
 ## Quickstart
