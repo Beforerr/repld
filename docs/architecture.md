@@ -14,12 +14,11 @@ The interpreter is an explicit leading positional. The language is resolved
 *before* `<exe>`; anything after forwards verbatim to the interpreter, except the
 eval flag (`-e`/`-c`/`-E`), which repld captures.
 
-**File mode**: with no eval flag captured, the first non-flag positional after
-`<exe>` naming an existing regular file (no ext check; missing → launch arg;
-subcommand-named → `./` prefix) evals in-session; the rest of argv is its script
-args. Sent abs-ified as `protocolRequest.File`/`FileArgs`, never read client-side
-and never a launch arg: the daemon wraps it via `Adapter.EvalFileStmt` through
-the normal eval path, so it re-evals in the warm session on every call.
+**File mode** (mirrors `<exe> [switches] [--] programfile args...`): with no eval flag captured, the first non-flag positional after `<exe>` naming an existing regular file (missing → launch arg) evals in-session; the rest of argv is its script args. `--` forces
+the split when a space-form flag value names a file (`-L setup.jl`). Sent
+abs-ified as `protocolRequest.File`/`FileArgs`, never read client-side and
+never a launch arg: the daemon wraps it via `Adapter.EvalFileStmt` through the
+normal eval path, so it re-evals in the warm session on every call.
 
 The engine in `go/` is language-agnostic; per-language specifics live behind
 `Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, `go/r/`, and `go/wolfram/`. `langs`

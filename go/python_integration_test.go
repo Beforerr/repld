@@ -90,13 +90,12 @@ func TestCLIPythonEvalDoesNotLeakInteractivePrompts(t *testing.T) {
 
 func TestCLIPythonMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
 	socketPath, _ := pythonTestDaemon(t)
+	cwd := sessionCwd(t)
 
-	// Own cwd → a cold session, so `x=1` is passed as a launch arg to a fresh
-	// python that fails to open it (a warm session would eval it as code).
-	res := repldOK(t, socketPath, sessionCwd(t), "python3", "x=1")
-	require.Contains(t, res.stderr, "can't open file")
-	require.NotContains(t, res.stderr, ">>>")
-	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")
+	repldOK(t, socketPath, cwd, "python3", "-c", "pass")
+	res := repldErr(t, socketPath, cwd, "python3", "x=1")
+	require.Contains(t, res.stderr, "FileNotFoundError")
+	require.Contains(t, res.stderr, "No such file")
 }
 
 func TestPythonTracebackLineNumbers(t *testing.T) {

@@ -100,6 +100,11 @@ func TestJuliaWarmSession(t *testing.T) {
 		require.Equal(t, expected, run("testdata/compute.jl"), "relative path resolved against session cwd")
 	})
 
+	t.Run("missing script", func(t *testing.T) {
+		res := repldErr(t, socketPath, cwd, "julia", "nonexistent.jl")
+		require.Contains(t, res.stderr, "No such file")
+	})
+
 	t.Run("trace saved", func(t *testing.T) {
 		res := repldErr(t, socketPath, cwd, "julia", "-e", `let f = () -> error("boom"); g = () -> f(); g(); end`)
 		require.Empty(t, res.stdout)
@@ -269,18 +274,16 @@ func TestInterruptIdleSession(t *testing.T) {
 // covers `timeout 30 repld ...` scenario
 func TestClientDisconnectInterruptsEval(t *testing.T) {
 	socketPath := sharedDaemon(t)
+	cwd := sharedJuliaCwd(t)
 
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-
-	// Prime the session and set state that must survive the disconnect-interrupt.
-	repldOK(t, socketPath, cwd, "--session", "disc", "julia", "-e", "marker = 5678")
+	// Set state that must survive the disconnect-interrupt.
+	repldOK(t, socketPath, cwd, "julia", "-e", "marker = 5678")
 
 	// Start a long eval on its own connection.
 	conn, err := net.Dial("unix", socketPath)
 	require.NoError(t, err)
 	require.NoError(t, json.NewEncoder(conn).Encode(protocolRequest{
-		Action: "eval", Lang: "julia", Session: "disc", Code: "sleep(60)", Cwd: cwd,
+		Action: "eval", Lang: "julia", Code: "sleep(60)", Cwd: cwd,
 	}))
 
 	// Wait until the session reports busy.
@@ -304,7 +307,7 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 	// Session must be usable again AND have survived with state intact
 	doneCh := make(chan cliResult, 1)
 	go func() {
-		doneCh <- repldCLI(t, socketPath, cwd, "--session", "disc", "julia", "-e", "print(marker)")
+		doneCh <- repldCLI(t, socketPath, cwd, "julia", "-e", "print(marker)")
 	}()
 	select {
 	case r := <-doneCh:
@@ -388,18 +391,6 @@ func TestKillRunsAtexitHooks(t *testing.T) {
 	require.FileExists(t, marker, "graceful shutdown should run atexit hooks, not SIGKILL")
 }
 
-func TestCLIJuliaMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
-	if _, err := exec.LookPath(julia.Adapter{}.DefaultExe()); err != nil {
-		t.Skipf("%s not installed", julia.Adapter{}.DefaultExe())
-	}
-	socketPath := sharedDaemon(t)
-
-	// Own cwd → a cold session, so `x=1` reaches a fresh julia as a launch arg
-	// (a warm session would eval it as code).
-	res := repldOK(t, socketPath, sessionCwd(t), "julia", "x=1")
-	require.Contains(t, res.stderr, "No such file")
-	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")
-}
 
 func TestJuliaFileEvalArgsAndState(t *testing.T) {
 	if _, err := exec.LookPath(julia.Adapter{}.DefaultExe()); err != nil {
@@ -427,18 +418,16 @@ func TestJuliaFileEvalArgsAndState(t *testing.T) {
 // A request queued behind another eval must not interrupt running eval when client disconnects.
 func TestQueuedDisconnectDoesNotInterruptRunningEval(t *testing.T) {
 	socketPath := sharedDaemon(t)
-
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-	repldOK(t, socketPath, cwd, "--session", "q", "julia", "-e", "1")
+	cwd := sharedJuliaCwd(t)
+	repldOK(t, socketPath, cwd, "julia", "-e", "1")
 
 	// conn1: long enough to still be busy when conn2 queues and disconnects.
 	conn1, err := net.Dial("unix", socketPath)
 	require.NoError(t, err)
 	defer conn1.Close()
 	require.NoError(t, json.NewEncoder(conn1).Encode(protocolRequest{
-		Action: "eval", Lang: "julia", Session: "q", Cwd: cwd,
-		Code: "sleep(4); 4321", PrintResult: true,
+		Action: "eval", Lang: "julia", Cwd: cwd,
+		Code: "sleep(1.5); 4321", PrintResult: true,
 	}))
 
 	require.Eventually(t, func() bool {
@@ -449,7 +438,7 @@ func TestQueuedDisconnectDoesNotInterruptRunningEval(t *testing.T) {
 	conn2, err := net.Dial("unix", socketPath)
 	require.NoError(t, err)
 	require.NoError(t, json.NewEncoder(conn2).Encode(protocolRequest{
-		Action: "eval", Lang: "julia", Session: "q", Cwd: cwd, Code: "1+1",
+		Action: "eval", Lang: "julia", Cwd: cwd, Code: "1+1",
 	}))
 	time.Sleep(300 * time.Millisecond)
 	require.NoError(t, conn2.Close())
