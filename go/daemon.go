@@ -77,6 +77,13 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		}
 		return response{Output: msg}
 
+	case "close":
+		msg, err := state.manager.close(req.Lang, req.Session, req.Cwd, discFor(req))
+		if err != nil {
+			return errResp(err.Error())
+		}
+		return response{Output: msg}
+
 	case "stop":
 		state.stopOnce.Do(func() { close(state.stopCh) })
 		return response{Output: "Daemon stopping."}

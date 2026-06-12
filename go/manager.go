@@ -134,6 +134,20 @@ func (m *SessionManager) restart(lang, session, cwd, disc string) {
 	}
 }
 
+func (m *SessionManager) close(lang, session, cwd, disc string) (string, error) {
+	key := m.key(lang, session, cwd, disc)
+	m.mu.Lock()
+	sess := m.sessions[key]
+	delete(m.sessions, key)
+	delete(m.lastErrors, key)
+	m.mu.Unlock()
+	if sess == nil {
+		return "", fmt.Errorf("no session for %s", key)
+	}
+	sess.kill()
+	return fmt.Sprintf("Session %s closed.", key), nil
+}
+
 func (m *SessionManager) hasLiveSession(lang, session, cwd, disc string) bool {
 	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()

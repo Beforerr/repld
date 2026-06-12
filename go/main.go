@@ -191,6 +191,17 @@ func cmdInterrupt(socketPath, lang, exe, session string, fwd []string) {
 	}, false)
 }
 
+func cmdClose(socketPath, lang, exe, session string, fwd []string) {
+	run(socketPath, protocolRequest{
+		Action:  "close",
+		Lang:    lang,
+		Exe:     exe,
+		Cwd:     mustGetwd(),
+		Session: session,
+		Args:    fwd,
+	}, false)
+}
+
 func cmdTrace(socketPath, lang, exe, session, traceLevel string, fwd []string) {
 	traceLevel = cmp.Or(traceLevel, "full")
 	run(socketPath, protocolRequest{
@@ -209,7 +220,7 @@ func usage() {
 
 Usage:
   repld <exe> [interp-args] (--<eval> CODE | [--] <file> [script-args] | -)
-  repld <command> [<exe>] [--session L]   # target a session: trace, interrupt
+  repld <command> [<exe>] [--session L]   # target a session: trace, interrupt, close
   repld <command>                       # daemon-wide: sessions, stop, daemon
 
 <exe> is the interpreter to run (julia, python3, R, wolframscript, .venv/bin/python, /path/...).
@@ -223,10 +234,11 @@ repld flags:
   --fresh              Clear the targeted session before evaluating
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)
 
-Commands (trace/interrupt take an optional [exe] and/or --session to locate the session):
+Commands (trace/interrupt/close take an optional [exe] and/or --session to locate the session):
   sessions             List active sessions (all languages)
   trace                Print the last saved error traceback for the session
   interrupt            Interrupt the in-flight eval (SIGKILL after 3s if unresponsive)
+  close                Kill the session's interpreter and discard its state
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
     --idle-timeout SECS  Shut down after idle (default: 0 = never; use 'stop')
@@ -238,7 +250,7 @@ Global flags:
 }
 
 var subcommands = map[string]bool{
-	"sessions": true, "trace": true, "interrupt": true, "stop": true, "daemon": true,
+	"sessions": true, "trace": true, "interrupt": true, "close": true, "stop": true, "daemon": true,
 }
 
 type parsed struct {
@@ -468,6 +480,9 @@ func dispatchSubcommand(p parsed) {
 	case "interrupt":
 		tg := parseTarget(p)
 		cmdInterrupt(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.fwd)
+	case "close":
+		tg := parseTarget(p)
+		cmdClose(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.fwd)
 	case "daemon":
 		fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 		idleTimeout := fs.Float64("idle-timeout", 0, "Shut down after this many idle seconds (0 = never)")
