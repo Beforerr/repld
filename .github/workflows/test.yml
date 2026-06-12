@@ -14,9 +14,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      # go-version-file would pin the exact go.mod patch version, which is
-      # rarely in the runner toolcache and downloads a toolchain (~15-20s);
-      # stable matches the preinstalled one.
       - uses: actions/setup-go@v5
         with:
           go-version: stable

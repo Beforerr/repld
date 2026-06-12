@@ -13,6 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/Beforerr/repld/main/install.sh | ba
 Code is executed in long-lived sessions so state (variables, loaded packages/modules) persist between calls.
 
 ```bash
+# repld <exe> [interp-args] (--<eval> CODE | <file> | -)
 repld julia -e 'using LinearAlgebra; A = rand(3,3)'
 repld julia -E 'det(A)'                 # reuses warm session
 
@@ -27,6 +28,8 @@ repld wolframscript -c 'x = Range[5]'
 repld wolframscript -c 'Total[x]'
 ```
 
+Eval flags use each language's native spelling — Julia: `-e` / `-E`, Python: `-c`, R: `-e`, WolframScript: `-c`.
+
 Per-language docs: [julia](skills/repld/references/julia.md) · [python](skills/repld/references/python.md) · [R](skills/repld/references/r.md) · [Wolfram](skills/repld/references/wolfram.md).
 
 
@@ -38,13 +41,9 @@ The skill at `skills/repld/SKILL.md` teaches agents how to use repld.
 npx skills add https://github.com/Beforerr/repld
 ```
 
-
 ## Usage
 
-The eval flags use each language's native spelling — **Julia: `-e` / `-E`**, **Python: `-c`**, **R: `-e`**, **WolframScript: `-c`**:
-
 ```bash
-repld julia -e CODE  |  repld julia -E EXPR  |  repld python3 -c CODE  |  repld R -e CODE  |  repld wolframscript -c CODE
 repld julia/python3/R/wolframscript FILE [args...]
 
 repld --session LABEL <exe> ...   # named session, reusable across dirs
