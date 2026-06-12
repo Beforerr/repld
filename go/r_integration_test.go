@@ -17,8 +17,7 @@ func TestRAdapter(t *testing.T) {
 	if _, err := exec.LookPath(r.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", r.Adapter{}.DefaultExe())
 	}
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath := sharedDaemon(t)
 
 	cwd := t.TempDir()
 	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
@@ -47,8 +46,7 @@ func TestRFileEvalArgsAndState(t *testing.T) {
 	if _, err := exec.LookPath(r.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", r.Adapter{}.DefaultExe())
 	}
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath := sharedDaemon(t)
 
 	cwd := t.TempDir()
 	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
@@ -69,8 +67,7 @@ func TestRInterruptSurvives(t *testing.T) {
 	if _, err := exec.LookPath(r.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", r.Adapter{}.DefaultExe())
 	}
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath := sharedDaemon(t)
 
 	cwd, err := os.Getwd()
 	require.NoError(t, err)

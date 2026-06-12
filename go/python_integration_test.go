@@ -18,9 +18,7 @@ func pythonTestDaemon(t *testing.T) (socketPath, pythonExe string) {
 	if err != nil {
 		t.Skipf("%s not installed", python.Adapter{}.DefaultExe())
 	}
-	socketPath, stop, _ := startTestDaemon(t)
-	t.Cleanup(stop)
-	return socketPath, pythonExe
+	return sharedDaemon(t), pythonExe
 }
 
 func TestPythonAdapter(t *testing.T) {
@@ -93,7 +91,9 @@ func TestCLIPythonEvalDoesNotLeakInteractivePrompts(t *testing.T) {
 func TestCLIPythonMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
 	socketPath, _ := pythonTestDaemon(t)
 
-	res := repldOK(t, socketPath, "", "python3", "x=1")
+	// Own cwd → a cold session, so `x=1` is passed as a launch arg to a fresh
+	// python that fails to open it (a warm session would eval it as code).
+	res := repldOK(t, socketPath, t.TempDir(), "python3", "x=1")
 	require.Contains(t, res.stderr, "can't open file")
 	require.NotContains(t, res.stderr, ">>>")
 	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")

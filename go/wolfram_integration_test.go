@@ -15,8 +15,7 @@ func TestWolframAdapter(t *testing.T) {
 	if _, err := exec.LookPath(wolfram.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", wolfram.Adapter{}.DefaultExe())
 	}
-	socketPath, stop, _ := startTestDaemon(t)
-	defer stop()
+	socketPath := sharedDaemon(t)
 
 	cwd := t.TempDir()
 	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
