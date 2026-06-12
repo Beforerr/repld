@@ -51,7 +51,7 @@ func TestPythonSessionsAreKeyedByInterpreter(t *testing.T) {
 	wrapper := []byte(fmt.Sprintf("#!/bin/sh\nexec %q \"$@\"\n", pythonExe))
 	require.NoError(t, os.WriteFile(pyA, wrapper, 0755))
 	require.NoError(t, os.WriteFile(pyB, wrapper, 0755))
-	cwd := t.TempDir()
+	cwd := sessionCwd(t)
 
 	send := func(exe, code string) cliResult {
 		return repldOK(t, socketPath, cwd, exe, "-c", code)
@@ -65,7 +65,7 @@ func TestPythonSessionsAreKeyedByInterpreter(t *testing.T) {
 func TestPythonFileEvalArgsAndState(t *testing.T) {
 	socketPath, _ := pythonTestDaemon(t)
 
-	cwd := t.TempDir()
+	cwd := sessionCwd(t)
 	script := filepath.Join(cwd, "script.py")
 	require.NoError(t, os.WriteFile(script, []byte(`import sys
 print(",".join(sys.argv[1:]))
@@ -93,7 +93,7 @@ func TestCLIPythonMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
 
 	// Own cwd → a cold session, so `x=1` is passed as a launch arg to a fresh
 	// python that fails to open it (a warm session would eval it as code).
-	res := repldOK(t, socketPath, t.TempDir(), "python3", "x=1")
+	res := repldOK(t, socketPath, sessionCwd(t), "python3", "x=1")
 	require.Contains(t, res.stderr, "can't open file")
 	require.NotContains(t, res.stderr, ">>>")
 	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")

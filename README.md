@@ -7,7 +7,7 @@ Stateful and persistent REPL-like kernel for fast incremental iteration (Act →
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Beforerr/repld/main/install.sh | bash
 # Installs to ~/.local/bin. Override with `INSTALL_DIR` env var.
-# To uninstall: `rm "$(which repld)"`.
+# To uninstall: `repld stop && rm "$(which repld)"`.
 ```
 
 Code is executed in long-lived sessions so state (variables, loaded packages/modules) persist between calls.
@@ -45,7 +45,7 @@ The eval flags use each language's native spelling — **Julia: `-e` / `-E`**, *
 
 ```bash
 repld julia -e CODE  |  repld julia -E EXPR  |  repld python3 -c CODE  |  repld R -e CODE  |  repld wolframscript -c CODE
-repld julia script.jl [args...]
+repld julia/python3/R/wolframscript FILE [args...]
 
 repld --session LABEL <exe> ...   # named session, reusable across dirs
 repld --fresh <exe> ...           # restart targeted session first

@@ -318,7 +318,7 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 func TestRevisePicksUpPackageChanges(t *testing.T) {
 	socketPath := sharedDaemon(t)
 
-	pkgDir := t.TempDir()
+	pkgDir := sessionCwd(t)
 	srcDir := filepath.Join(pkgDir, "src")
 	require.NoError(t, os.Mkdir(srcDir, 0755))
 	projectToml, err := os.ReadFile(filepath.Join("testdata", "TestRevPkg", "Project.toml"))
@@ -357,7 +357,7 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 func TestJuliaWorldAgeDisplay(t *testing.T) {
 	socketPath := sharedDaemon(t)
 
-	pkgDir := t.TempDir()
+	pkgDir := sessionCwd(t)
 	require.NoError(t, os.Mkdir(filepath.Join(pkgDir, "src"), 0755))
 	uuid := fmt.Sprintf("a1b2c3d4-0000-0000-0000-%012d", time.Now().UnixNano()%1e12)
 	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "Project.toml"),
@@ -396,7 +396,7 @@ func TestCLIJuliaMissingScriptBehavesLikeInteractiveInterpreter(t *testing.T) {
 
 	// Own cwd → a cold session, so `x=1` reaches a fresh julia as a launch arg
 	// (a warm session would eval it as code).
-	res := repldOK(t, socketPath, t.TempDir(), "julia", "x=1")
+	res := repldOK(t, socketPath, sessionCwd(t), "julia", "x=1")
 	require.Contains(t, res.stderr, "No such file")
 	require.NotContains(t, res.stderr, "repld: persistent REPL daemon")
 }

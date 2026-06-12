@@ -31,6 +31,7 @@ type Session struct {
 	stderr      *bufio.Reader
 	control     *bufio.Reader
 	controlConn net.Conn
+	ctrlLines   chan *evalError // one parsed OK/ERR line per eval; closed on control EOF
 	exited      chan struct{}
 	mu          sync.Mutex    // guards startup
 	sem         chan struct{} // capacity-1: serialises evals, ctx-cancellable acquire
@@ -179,6 +180,20 @@ func (s *Session) start(exe string, workDir string) error {
 		s.kill()
 		return fmt.Errorf("control channel handshake did not complete")
 	}
+	// Persistent reader: a per-eval reader abandoned on timeout would stay
+	// blocked and steal the next eval's status line.
+	ctrl := make(chan *evalError, 8)
+	s.ctrlLines = ctrl
+	go func() {
+		defer close(ctrl)
+		for {
+			line, err := s.control.ReadString('\n')
+			if err != nil {
+				return
+			}
+			ctrl <- parseControlLine(line)
+		}
+	}()
 	return nil
 }
 
@@ -328,6 +343,20 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 	if expectControl && s.control == nil {
 		return nil, fmt.Errorf("control channel unavailable")
 	}
+	if expectControl {
+		// Discard status lines stranded by a previous eval's bounded wait.
+	drain:
+		for {
+			select {
+			case _, ok := <-s.ctrlLines:
+				if !ok {
+					break drain
+				}
+			default:
+				break drain
+			}
+		}
+	}
 
 	// The JSON encoder and log writer are shared between stdout/stderr readers.
 	var emitMu sync.Mutex
@@ -366,20 +395,6 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 		errCh <- scanResult{tail: tail, err: err}
 	}()
 
-	// Read while the runtime writes; large tracebacks can otherwise deadlock
-	// before sentinel drain completes.
-	ctrlCh := make(chan *evalError, 1)
-	if expectControl {
-		go func() {
-			line, err := s.control.ReadString('\n')
-			if err != nil {
-				ctrlCh <- nil
-				return
-			}
-			ctrlCh <- parseControlLine(line)
-		}()
-	}
-
 	wait := func() (*evalError, error) {
 		outErr := <-outCh
 		errResult := <-errCh
@@ -390,7 +405,20 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 			return nil, outErr
 		}
 		if expectControl {
-			return <-ctrlCh, nil
+			// Status line is written before the sentinel, so it's normally in
+			// flight here; missing only when an interrupt aborted the eval
+			// pre-handler. Bound the wait (below the 3s interrupt-kill grace)
+			// to degrade instead of hang.
+			select {
+			case ee, ok := <-s.ctrlLines:
+				if !ok {
+					return nil, nil // control EOF: death is reported via the stdout scan
+				}
+				return ee, nil
+			case <-time.After(2 * time.Second):
+				short := "ERROR: interrupted (eval aborted before reporting status)"
+				return &evalError{short: short, smart: short + "\n", full: short + "\n"}, nil
+			}
 		}
 		return nil, nil
 	}

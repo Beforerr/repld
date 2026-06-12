@@ -17,7 +17,7 @@ func TestWolframAdapter(t *testing.T) {
 	}
 	socketPath := sharedDaemon(t)
 
-	cwd := t.TempDir()
+	cwd := sessionCwd(t)
 	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 	res := repldOK(t, socketPath, cwd, "wolframscript", "-c", `21 * 2`)
