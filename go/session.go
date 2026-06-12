@@ -21,6 +21,7 @@ const startupTimeout = 120.0
 
 type Session struct {
 	adapter  Adapter
+	id       string // short auto-assigned handle
 	lang     string
 	sentinel string
 	fwd      []string

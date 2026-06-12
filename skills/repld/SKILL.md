@@ -34,14 +34,14 @@ repld python3 train.py 50  # 50 → sys.argv[1]
 - Session routing: `--session LABEL` has highest priority. Otherwise sessions are keyed by language plus adapter-specific environment (for example project flag for Julia, interpreter path for Python/R/Wolfram) plus cwd.
 - Avoid using `--fresh` when a live interpreter can safely pick up changed state.
 
-See [references/julia.md](references/julia.md) for Julia-specific notes.
+See [julia.md](references/julia.md), [python.md](references/python.md), [r.md](references/r.md), [wolfram.md](references/wolfram.md) for language-specific notes.
 
 ## Commands
 
 ```bash
-repld trace --session scratch               # last saved traceback, no rerun
-repld interrupt --session scratch           # interrupt stuck eval; state kept on Julia/Python/R, Wolfram = kill
-repld sessions                              # list active sessions
+repld sessions                              # list active sessions, show IDs
+repld trace [id | exe | --session=LABEL]    # last saved traceback
+repld interrupt [id | exe | --session=LABEL] # interrupt eval
 repld stop                                  # shut down daemon
 
 timeout 30 repld julia -e 'might_hang()'    # client death interrupts eval

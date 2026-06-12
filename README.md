@@ -51,9 +51,9 @@ repld --session LABEL <exe> ...   # named session, reusable across dirs
 repld --fresh <exe> ...           # restart targeted session first
 repld --trace LEVEL <exe> ...     # error traceback level: short | smart | full
 
-repld trace [--session=L | exe]   # last saved traceback
-repld interrupt [--session=L | exe] # interrupt in-flight eval
-repld close [--session=L | exe]
+repld trace [id | exe | --session=L]    # last saved traceback
+repld interrupt [id | exe | --session=L] # interrupt in-flight eval
+repld close [id | exe | --session=L]
 repld sessions                    # list active sessions
 repld stop                        # shutdown daemon
 ```
