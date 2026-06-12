@@ -115,11 +115,21 @@ func TestParseArgsFileMode(t *testing.T) {
 	require.NoError(t, os.WriteFile(recipe, []byte("#!/usr/bin/env -S repld julia\n1\n"), 0755))
 	require.Equal(t, recipe, parseCLI([]string{"julia", recipe, "x"}).file)
 
-	// An eval flag disables detection; a missing path forwards as a launch arg.
+	// An eval flag disables detection; a missing path still enters file mode.
 	got = parseCLI([]string{"julia", "-e", "1", jl})
 	require.Equal(t, "", got.file)
 	require.Equal(t, []string{jl}, got.fwd)
-	require.Equal(t, "", parseCLI([]string{"julia", filepath.Join(dir, "nope.jl")}).file)
+	require.Equal(t, filepath.Join(dir, "nope.jl"), parseCLI([]string{"julia", filepath.Join(dir, "nope.jl")}).file)
+
+	for _, argv := range [][]string{
+		{"julia", "--project=test", jl, "a"},
+		{"julia", "--project=test", "--", jl, "a"},
+	} {
+		got = parseCLI(argv)
+		require.Equal(t, []string{"--project=test"}, got.fwd)
+		require.Equal(t, jl, got.file)
+		require.Equal(t, []string{"a"}, got.fileArgs)
+	}
 }
 
 func TestParseArgs(t *testing.T) {
@@ -142,8 +152,8 @@ func TestParseArgs(t *testing.T) {
 			parsed{fwd: []string{"--startup-file=no"}}},
 		{"juliaup channel forwards after exe", []string{"julia", "+1.11", "-e", "c"},
 			parsed{exe: "julia", evalMode: "eval", code: "c", fwd: []string{"+1.11"}}},
-		// Positionals after launch args are never file mode.
-		{"no file mode once forwarding starts", []string{"julia", "--project", "/env", "script.jl", "arg1"},
+		// Missing files forward as launch args even after flags.
+		{"missing file forwards after launch flags", []string{"julia", "--project", "/env", "script.jl", "arg1"},
 			parsed{exe: "julia", fwd: []string{"--project", "/env", "script.jl", "arg1"}}},
 		{"subcommand", []string{"sessions"}, parsed{sub: "sessions"}},
 		{"flags before subcommand", []string{"--socket", "x", "sessions"},

@@ -208,7 +208,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `repld: persistent REPL daemon for multiple interpreters
 
 Usage:
-  repld <exe> [interp-args] (--<eval> CODE | <file> | -)
+  repld <exe> [interp-args] (--<eval> CODE | [--] <file> [script-args] | -)
   repld <command> [<exe>] [--session L]   # target a session: trace, interrupt
   repld <command>                       # daemon-wide: sessions, stop, daemon
 
@@ -296,6 +296,21 @@ func parseArgs(args []string) parsed {
 			i++
 			continue
 		}
+		// "--" marks the next token as the eval file, mirroring 
+		// `<exe> [switches] -- [programfile] [args...]`.
+		if t == "--" && p.exe != "" && p.evalMode == "" && p.sub == "" {
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "missing file after --")
+				usage()
+			}
+			f := args[i+1]
+			if fi, err := os.Stat(f); err != nil || !fi.Mode().IsRegular() {
+				fmt.Fprintf(os.Stderr, "file not found: %s\n", f)
+				os.Exit(1)
+			}
+			p.file, p.fileArgs = f, args[i+2:]
+			break
+		}
 		if strings.HasPrefix(t, "-") {
 			name := flagName(t)
 			dst, isRepld := repld[name]
@@ -323,12 +338,9 @@ func parseArgs(args []string) parsed {
 			i++
 			continue
 		}
-		// File mode: the first interpreter token naming an existing regular file
-		// evals in-session; the rest of argv is its script args. No ext check
-		// (shebang/justfile temp scripts are extensionless); a missing path
-		// forwards as a launch arg; subcommand names need a ./ prefix.
-		if p.exe != "" && p.evalMode == "" && len(p.fwd) == 0 && !subcommands[t] {
-			if fi, err := os.Stat(t); err == nil && fi.Mode().IsRegular() {
+		// File mode (mirrors `<exe> [options] programfile args...`)
+		if p.exe != "" && p.evalMode == "" && !subcommands[t] {
+			if fi, err := os.Stat(t); (err == nil && fi.Mode().IsRegular()) || (len(p.fwd) == 0 && !strings.HasPrefix(t, "+")) {
 				p.file = t
 				i++
 				continue
