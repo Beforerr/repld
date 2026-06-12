@@ -445,6 +445,10 @@ func dispatchSubcommand(p parsed) {
 	case "sessions":
 		run(p.socket, protocolRequest{Action: "sessions"}, false)
 	case "stop":
+		if !pingDaemon(p.socket) {
+			fmt.Println("repld daemon is not running.")
+			return
+		}
 		run(p.socket, protocolRequest{Action: "stop"}, false)
 	case "trace":
 		tg := parseTarget(p)

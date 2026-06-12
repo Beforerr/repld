@@ -1,3 +1,8 @@
+# Non-interactive R exits "Execution halted" on an uncaught interrupt (SIGINT
+# outside .repld_run's tryCatch: pre-handler decode/parse, sentinel statement)
+# unless this is set (check_session_exit, R src/main/main.c).
+options(catch.script.errors = TRUE)
+
 .repld_decode <- function(encoded) {
   if (!nzchar(encoded)) {
     return("")
@@ -57,8 +62,12 @@
 }
 
 .repld_run <- function(hex_code, print_result) {
-  code <- .repld_decode(hex_code)
+  # Engine resends SIGINT while an interrupt is in flight; a late one sits
+  # pending at the top-level read and would detonate inside this eval. Discard
+  # it (a real interrupt for this eval gets resent).
+  tryCatch(Sys.sleep(0.001), interrupt = function(cond) NULL)
   tryCatch({
+    code <- .repld_decode(hex_code)
     exprs <- parse(text = code, srcfile = srcfilecopy("<repld>", code))
     visible <- FALSE
     value <- NULL

@@ -42,6 +42,8 @@ var (
 	sharedStop      func()
 	sharedJuliaDir  string
 	sharedJuliaOnce sync.Once
+	sessionCwdMu    sync.Mutex
+	sessionCwds     []string
 )
 
 func sharedDaemon(t *testing.T) string {
@@ -60,6 +62,24 @@ func stopSharedDaemon() {
 	if sharedJuliaDir != "" {
 		os.RemoveAll(sharedJuliaDir)
 	}
+	for _, dir := range sessionCwds {
+		os.RemoveAll(dir)
+	}
+}
+
+// sessionCwd returns a temp dir to use as a session cwd. It must outlive the
+// test: sessions on the shared daemon keep running with this dir as their
+// process cwd, which on Windows locks it against t.TempDir's RemoveAll cleanup.
+func sessionCwd(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "repld-cwd-")
+	require.NoError(t, err)
+	dir, err = filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	sessionCwdMu.Lock()
+	sessionCwds = append(sessionCwds, dir)
+	sessionCwdMu.Unlock()
+	return dir
 }
 
 // sharedJuliaCwd returns a stable temp dir so display/eval/trace tests that
@@ -69,6 +89,8 @@ func sharedJuliaCwd(t *testing.T) string {
 	t.Helper()
 	sharedJuliaOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "repld-julia-shared-")
+		require.NoError(t, err)
+		dir, err = filepath.EvalSymlinks(dir)
 		require.NoError(t, err)
 		sharedJuliaDir = dir
 	})

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestRAdapter(t *testing.T) {
 	}
 	socketPath := sharedDaemon(t)
 
-	cwd := t.TempDir()
+	cwd := sessionCwd(t)
 	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 	res := repldOK(t, socketPath, cwd, "R", "-e", `cat(21 * 2, "\n", sep = "")`)
@@ -48,7 +49,7 @@ func TestRFileEvalArgsAndState(t *testing.T) {
 	}
 	socketPath := sharedDaemon(t)
 
-	cwd := t.TempDir()
+	cwd := sessionCwd(t)
 	lf := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	script := filepath.Join(cwd, "script.R")
 	require.NoError(t, os.WriteFile(script,
@@ -64,6 +65,9 @@ func TestRFileEvalArgsAndState(t *testing.T) {
 }
 
 func TestRInterruptSurvives(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("interruptProc cannot deliver SIGINT to detached children on windows")
+	}
 	if _, err := exec.LookPath(r.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", r.Adapter{}.DefaultExe())
 	}
