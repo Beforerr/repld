@@ -1,7 +1,5 @@
 # repld
 
-[![codecov](https://codecov.io/gh/Beforerr/repld/branch/main/graph/badge.svg)](https://codecov.io/gh/Beforerr/repld)
-
 Stateful and persistent REPL-like kernel for fast incremental iteration (Act → observe → adjust). CLI/agent-first design.
 
 ## Quickstart
@@ -58,7 +56,7 @@ repld sessions                    # list active sessions
 repld stop                        # shutdown daemon
 ```
 
-`<exe>` is `julia`, `python3`, `R`, `wolframscript`, an absolute/relative interpreter path, etc. repld's own flags (`--socket`/`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except native eval/print flags (`-e`/`-c`/`-E`). Each call routes to a persistent session keyed by language + project + `--session`/cwd.
+`<exe>` is `julia`, `python3`, `R`, `wolframscript`, an absolute/relative interpreter path, etc. repld's own flags (`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except native eval/print flags (`-e`/`-c`/`-E`). Each call routes to a persistent session keyed by language + project + `--session`/cwd.
 
 ## Architecture
 

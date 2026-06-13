@@ -219,12 +219,12 @@ func cmdTrace(socketPath string, tg subTarget, exe string) {
 }
 
 func usage(exitCode int) {
-	fmt.Fprintf(os.Stderr, `repld: persistent REPL daemon for multiple interpreters
+	fmt.Fprintf(os.Stderr, `Persistent REPL-like polyglot daemon
 
 Usage:
   repld <exe> [interp-args] (--<eval> CODE | [--] <file> [script-args] | -)
   repld <command> [<exe>|<id>] [--session L]  # target a session: trace, interrupt, close
-  repld <command>                       # daemon-wide: sessions, stop, daemon
+  repld <command>                       	  # daemon-wide: sessions, stop, daemon
 
 <exe> is the interpreter to run (julia, python3, R, wolframscript, .venv/bin/python, /path/...).
 The language is inferred from its name, or set with --lang. 
@@ -246,10 +246,7 @@ short id shown by 'sessions'; an id prefix works when unambiguous):
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
     --idle-timeout SECS  Shut down after idle (default: 0 = never; use 'stop')
-
-Global flags:
-  --socket PATH        Unix socket path (default: %s)
-`, defaultSocket)
+`)
 	os.Exit(exitCode)
 }
 

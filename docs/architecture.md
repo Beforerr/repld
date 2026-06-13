@@ -1,5 +1,7 @@
 # Architecture
 
+[![codecov](https://codecov.io/gh/Beforerr/repld/branch/main/graph/badge.svg)](https://codecov.io/gh/Beforerr/repld)
+
 Single Go binary `repld` (`go/`), acting as both client and daemon, **polyglot**.
 This is the one source of truth for how the engine works; README and CLAUDE.md
 point here.
