@@ -116,6 +116,25 @@ func TestInterruptUnknownSession(t *testing.T) {
 	require.Contains(t, resp.Error, "no session")
 }
 
+func TestCloseUnknownSession(t *testing.T) {
+	resp := handleRequest(newTestState(), protocolRequest{Action: "close", Session: "nope", Cwd: t.TempDir()})
+	require.NotEmpty(t, resp.Error)
+	require.Contains(t, resp.Error, "no session")
+}
+
+func TestCloseSession(t *testing.T) {
+	state := newTestState()
+	sess := newSession(julia.Adapter{}, "s", nil, nil)
+	sess.lang = "julia"
+	state.manager.sessions["~scratch"] = sess
+
+	resp := handleRequest(state, protocolRequest{Action: "close", Session: "scratch", Cwd: t.TempDir()})
+	require.Empty(t, resp.Error)
+	require.Contains(t, resp.Output, "closed")
+	require.Empty(t, state.manager.sessions)
+	require.False(t, sess.isAlive())
+}
+
 func TestSessionManagerKey(t *testing.T) {
 	m := newSessionManager()
 	defer m.shutdown()
