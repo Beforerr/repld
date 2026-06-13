@@ -218,7 +218,7 @@ func cmdTrace(socketPath string, tg subTarget, exe string) {
 	}, false)
 }
 
-func usage() {
+func usage(exitCode int) {
 	fmt.Fprintf(os.Stderr, `repld: persistent REPL daemon for multiple interpreters
 
 Usage:
@@ -250,7 +250,7 @@ short id shown by 'sessions'; an id prefix works when unambiguous):
 Global flags:
   --socket PATH        Unix socket path (default: %s)
 `, defaultSocket)
-	os.Exit(2)
+	os.Exit(exitCode)
 }
 
 var subcommands = map[string]bool{
@@ -312,12 +312,12 @@ func parseArgs(args []string) parsed {
 			i++
 			continue
 		}
-		// "--" marks the next token as the eval file, mirroring 
+		// "--" marks the next token as the eval file, mirroring
 		// `<exe> [switches] -- [programfile] [args...]`.
 		if t == "--" && p.exe != "" && p.evalMode == "" && p.sub == "" {
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "missing file after --")
-				usage()
+				usage(2)
 			}
 			f := args[i+1]
 			if fi, err := os.Stat(f); err != nil || !fi.Mode().IsRegular() {
@@ -335,7 +335,7 @@ func parseArgs(args []string) parsed {
 				val, next, ok := consumeFlagValue(args, i)
 				if !ok {
 					fmt.Fprintf(os.Stderr, "missing value for %s\n", t)
-					usage()
+					usage(2)
 				}
 				if mode != "" {
 					p.evalMode, p.code = mode, val
@@ -461,8 +461,7 @@ func main() {
 	}
 
 	if lang == "" && p.session == "" {
-		fmt.Fprintln(os.Stderr, "no interpreter: use `repld <exe> ...`, --lang, or --session LABEL for an existing session")
-		usage()
+		usage(0)
 	}
 	exe := resolveExeStr(p.exe, lang)
 
@@ -476,7 +475,7 @@ func main() {
 	default:
 		fi, err := os.Stdin.Stat()
 		if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
-			usage()
+			usage(2)
 		}
 		cmdEval(p.socket, lang, "-", exe, p.session, false, p.fresh, p.trace, p.fwd)
 	}
