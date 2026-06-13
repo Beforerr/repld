@@ -98,6 +98,18 @@ func TestParseTargetVerbFirst(t *testing.T) {
 	require.Equal(t, "ml", tg.session)
 	require.Equal(t, "", tg.exe)
 	require.Equal(t, "", tg.lang)
+
+	// A bare token in the id alphabet targets by session id; real exe
+	// names ("r" is too short, others use letters outside k-z) stay exes.
+	tg = parseTarget(parseCLI([]string{"close", "kqzm"}))
+	require.Equal(t, "kqzm", tg.id)
+	require.Equal(t, "", tg.exe)
+	tg = parseTarget(parseCLI([]string{"close", "r"}))
+	require.Equal(t, "", tg.id)
+	require.Equal(t, "r", tg.exe)
+	tg = parseTarget(parseCLI([]string{"close", "python"}))
+	require.Equal(t, "", tg.id)
+	require.Equal(t, "python", tg.exe)
 }
 
 func TestParseArgsFileMode(t *testing.T) {

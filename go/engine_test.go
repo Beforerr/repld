@@ -93,6 +93,7 @@ func TestHandleRequest_SessionsList(t *testing.T) {
 	// python dir session. The key is lang-prefixed; --session labels are global.
 	jl := newSession(julia.Adapter{}, "s", []string{"--project=/env"}, nil)
 	jl.lang = "julia"
+	jl.id = "kqzmkqzm"
 	named := newSession(julia.Adapter{}, "s", nil, nil)
 	named.lang = "julia"
 	py := newSession(python.Adapter{}, "s", nil, nil)
@@ -104,10 +105,9 @@ func TestHandleRequest_SessionsList(t *testing.T) {
 
 	resp := handleRequest(state, protocolRequest{Action: "sessions"})
 	require.Empty(t, resp.Error)
-	require.Equal(t, `Active sessions:
-  [julia] dir /work project=/env args=--project=/env
-  [julia] session scratch project=@.
-  [python] dir /work status=dead`, resp.Output)
+	require.Equal(t, `kqzmkqzm [julia] dir /work project=/env args=--project=/env
+ [julia] session scratch project=@.
+ [python] dir /work status=dead`, resp.Output)
 }
 
 func TestInterruptUnknownSession(t *testing.T) {
@@ -133,6 +133,46 @@ func TestCloseSession(t *testing.T) {
 	require.Contains(t, resp.Output, "closed")
 	require.Empty(t, state.manager.sessions)
 	require.False(t, sess.isAlive())
+}
+
+func TestCloseSessionByID(t *testing.T) {
+	state := newTestState()
+	sess := newSession(julia.Adapter{}, "s", nil, nil)
+	sess.lang = "julia"
+	sess.id = "kqzm"
+	state.manager.sessions["julia\x00/work\x00@."] = sess
+
+	// Unique prefix resolves regardless of cwd.
+	resp := handleRequest(state, protocolRequest{Action: "close", ID: "kq", Cwd: t.TempDir()})
+	require.Empty(t, resp.Error)
+	require.Contains(t, resp.Output, "closed")
+	require.Empty(t, state.manager.sessions)
+
+	resp = handleRequest(state, protocolRequest{Action: "close", ID: "kq", Cwd: t.TempDir()})
+	require.Contains(t, resp.Error, `no session with id "kq"`)
+}
+
+func TestKeyForIDPrefix(t *testing.T) {
+	m := newSessionManager()
+	defer m.shutdown()
+	a := newSession(julia.Adapter{}, "s", nil, nil)
+	a.id = "kqzm"
+	b := newSession(julia.Adapter{}, "s", nil, nil)
+	b.id = "kxyz"
+	m.sessions["julia\x00/a\x00@."] = a
+	m.sessions["julia\x00/b\x00@."] = b
+
+	key, err := m.keyForID("kq")
+	require.NoError(t, err)
+	require.Equal(t, "julia\x00/a\x00@.", key)
+
+	_, err = m.keyForID("k") // shared prefix → ambiguous
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ambiguous")
+
+	key, err = m.keyForID("zz") // no match
+	require.NoError(t, err)
+	require.Equal(t, "", key)
 }
 
 func TestSessionManagerKey(t *testing.T) {

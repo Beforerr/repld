@@ -53,6 +53,7 @@ type response struct {
 
 type protocolRequest struct {
 	Action          string   `json:"action"`
+	ID              string   `json:"id,omitempty"` // short session id for targeting commands
 	Lang            string   `json:"lang,omitempty"`
 	Code            string   `json:"code,omitempty"`
 	Cwd             string   `json:"cwd,omitempty"`
@@ -180,38 +181,40 @@ func cmdEvalFile(socketPath, lang, file, exe, session string, fresh bool, traceL
 	}, true)
 }
 
-func cmdInterrupt(socketPath, lang, exe, session string, fwd []string) {
+func cmdInterrupt(socketPath string, tg subTarget, exe string) {
 	run(socketPath, protocolRequest{
 		Action:  "interrupt",
-		Lang:    lang,
+		ID:      tg.id,
+		Lang:    tg.lang,
 		Exe:     exe,
 		Cwd:     mustGetwd(),
-		Session: session,
-		Args:    fwd,
+		Session: tg.session,
+		Args:    tg.fwd,
 	}, false)
 }
 
-func cmdClose(socketPath, lang, exe, session string, fwd []string) {
+func cmdClose(socketPath string, tg subTarget, exe string) {
 	run(socketPath, protocolRequest{
 		Action:  "close",
-		Lang:    lang,
+		ID:      tg.id,
+		Lang:    tg.lang,
 		Exe:     exe,
 		Cwd:     mustGetwd(),
-		Session: session,
-		Args:    fwd,
+		Session: tg.session,
+		Args:    tg.fwd,
 	}, false)
 }
 
-func cmdTrace(socketPath, lang, exe, session, traceLevel string, fwd []string) {
-	traceLevel = cmp.Or(traceLevel, "full")
+func cmdTrace(socketPath string, tg subTarget, exe string) {
 	run(socketPath, protocolRequest{
 		Action:     "trace",
-		Lang:       lang,
+		ID:         tg.id,
+		Lang:       tg.lang,
 		Exe:        exe,
 		Cwd:        mustGetwd(),
-		Session:    session,
-		TraceLevel: traceLevel,
-		Args:       fwd,
+		Session:    tg.session,
+		TraceLevel: cmp.Or(tg.level, "full"),
+		Args:       tg.fwd,
 	}, false)
 }
 
@@ -220,7 +223,7 @@ func usage() {
 
 Usage:
   repld <exe> [interp-args] (--<eval> CODE | [--] <file> [script-args] | -)
-  repld <command> [<exe>] [--session L]   # target a session: trace, interrupt, close
+  repld <command> [<exe>|<id>] [--session L]  # target a session: trace, interrupt, close
   repld <command>                       # daemon-wide: sessions, stop, daemon
 
 <exe> is the interpreter to run (julia, python3, R, wolframscript, .venv/bin/python, /path/...).
@@ -234,7 +237,8 @@ repld flags:
   --fresh              Clear the targeted session before evaluating
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)
 
-Commands (trace/interrupt/close take an optional [exe] and/or --session to locate the session):
+Commands (trace/interrupt/close locate a session by [exe], --session, or the
+short id shown by 'sessions'; an id prefix works when unambiguous):
   sessions             List active sessions (all languages)
   trace                Print the last saved error traceback for the session
   interrupt            Interrupt the in-flight eval (SIGKILL after 3s if unresponsive)
@@ -385,8 +389,20 @@ func resolveExeStr(exe, lang string) string {
 }
 
 type subTarget struct {
-	exe, lang, session, level string
-	fwd                       []string
+	exe, id, lang, session, level string
+	fwd                           []string
+}
+
+func looksLikeID(s string) bool {
+	if len(s) < 2 || len(s) > 2*idLen {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune(idAlphabet, c) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseTarget(p parsed) subTarget {
@@ -395,7 +411,9 @@ func parseTarget(p parsed) subTarget {
 	for i := 0; i < len(a); {
 		s := a[i]
 		if !strings.HasPrefix(s, "-") {
-			if tg.exe == "" && s != "" {
+			if tg.id == "" && tg.exe == "" && looksLikeID(s) {
+				tg.id = s
+			} else if tg.exe == "" && s != "" {
 				tg.exe = s
 			} else {
 				tg.fwd = append(tg.fwd, s)
@@ -476,13 +494,13 @@ func dispatchSubcommand(p parsed) {
 		run(p.socket, protocolRequest{Action: "stop"}, false)
 	case "trace":
 		tg := parseTarget(p)
-		cmdTrace(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.level, tg.fwd)
+		cmdTrace(p.socket, tg, resolveExeStr(tg.exe, tg.lang))
 	case "interrupt":
 		tg := parseTarget(p)
-		cmdInterrupt(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.fwd)
+		cmdInterrupt(p.socket, tg, resolveExeStr(tg.exe, tg.lang))
 	case "close":
 		tg := parseTarget(p)
-		cmdClose(p.socket, tg.lang, resolveExeStr(tg.exe, tg.lang), tg.session, tg.fwd)
+		cmdClose(p.socket, tg, resolveExeStr(tg.exe, tg.lang))
 	case "daemon":
 		fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 		idleTimeout := fs.Float64("idle-timeout", 0, "Shut down after this many idle seconds (0 = never)")

@@ -29,7 +29,11 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 
 	switch req.Action {
 	case "trace":
-		err := state.manager.lastError(req.Lang, req.Session, req.Cwd, discFor(req))
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		if kerr != nil {
+			return errResp(kerr.Error())
+		}
+		err := state.manager.lastError(key)
 		if err == nil {
 			return errResp("No saved traceback for this session.")
 		}
@@ -43,7 +47,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		sort.Slice(sessions, func(i, j int) bool {
 			return sessions[i].lang+sessions[i].label < sessions[j].lang+sessions[j].label
 		})
-		lines := []string{"Active sessions:"}
+		lines := []string{}
 		for _, s := range sessions {
 			label := s.label
 			if strings.HasPrefix(label, "~") {
@@ -51,7 +55,9 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 			} else {
 				label = "dir " + label
 			}
-			line := fmt.Sprintf("  [%s] %s", s.lang, label)
+			line := ""
+			line += s.id + " "
+			line += fmt.Sprintf("[%s] %s", s.lang, label)
 			if s.project != "" {
 				line += " project=" + s.project
 			}
@@ -71,14 +77,22 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		return response{Output: strings.Join(lines, "\n")}
 
 	case "interrupt":
-		msg, err := state.manager.interrupt(req.Lang, req.Session, req.Cwd, discFor(req), 3.0)
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		if kerr != nil {
+			return errResp(kerr.Error())
+		}
+		msg, err := state.manager.interrupt(key, 3.0)
 		if err != nil {
 			return errResp(err.Error())
 		}
 		return response{Output: msg}
 
 	case "close":
-		msg, err := state.manager.close(req.Lang, req.Session, req.Cwd, discFor(req))
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		if kerr != nil {
+			return errResp(kerr.Error())
+		}
+		msg, err := state.manager.close(key)
 		if err != nil {
 			return errResp(err.Error())
 		}

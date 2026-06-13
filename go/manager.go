@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,60 @@ func (m *SessionManager) key(lang, session, cwd, disc string) string {
 		route = filepath.Clean(route)
 	}
 	return lang + "\x00" + route + "\x00" + disc
+}
+
+// from k-z : IDs never look like exe names, paths
+const idAlphabet = "klmnopqrstuvwxyz"
+const idLen = 8
+
+func (m *SessionManager) uniqueIDLocked() string {
+	for {
+		b := make([]byte, idLen)
+		rand.Read(b)
+		id := make([]byte, idLen)
+		for i, c := range b {
+			id[i] = idAlphabet[int(c)%len(idAlphabet)]
+		}
+		inUse := false
+		for _, sess := range m.sessions {
+			if sess.id == string(id) {
+				inUse = true
+				break
+			}
+		}
+		if !inUse {
+			return string(id)
+		}
+	}
+}
+
+func (m *SessionManager) keyForID(prefix string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	match := ""
+	for key, sess := range m.sessions {
+		if sess.id != "" && strings.HasPrefix(sess.id, prefix) {
+			if match != "" {
+				return "", fmt.Errorf("session id %q is ambiguous", prefix)
+			}
+			match = key
+		}
+	}
+	return match, nil
+}
+
+func (m *SessionManager) targetKey(id, lang, session, cwd, disc string) (string, error) {
+	if id != "" {
+		key, err := m.keyForID(id)
+		if err != nil {
+			return "", err
+		}
+		if key == "" {
+			return "", fmt.Errorf("no session with id %q", id)
+		}
+		return key, nil
+	}
+	return m.key(lang, session, cwd, disc), nil
 }
 
 // keyLabel is the human label for a key: a "~label" session label, else the cwd
@@ -105,6 +160,7 @@ func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []strin
 		}
 
 		m.mu.Lock()
+		sess.id = m.uniqueIDLocked()
 		m.sessions[key] = sess
 		m.mu.Unlock()
 		return sess, nil
@@ -134,8 +190,7 @@ func (m *SessionManager) restart(lang, session, cwd, disc string) {
 	}
 }
 
-func (m *SessionManager) close(lang, session, cwd, disc string) (string, error) {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) close(key string) (string, error) {
 	m.mu.Lock()
 	sess := m.sessions[key]
 	delete(m.sessions, key)
@@ -163,14 +218,14 @@ func (m *SessionManager) recordError(lang, session, cwd, disc string, err *evalE
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) lastError(lang, session, cwd, disc string) *evalError {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) lastError(key string) *evalError {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastErrors[key]
 }
 
 type sessionInfo struct {
+	id      string
 	lang    string
 	label   string // session label or cwd
 	project string // environment discriminant (Julia --project); "" if none
@@ -187,6 +242,7 @@ func (m *SessionManager) list() []sessionInfo {
 	result := make([]sessionInfo, 0, len(m.sessions))
 	for key, sess := range m.sessions {
 		info := sessionInfo{
+			id:    sess.id,
 			lang:  sess.lang,
 			label: keyLabel(key),
 			alive: sess.isAlive(),
@@ -206,8 +262,7 @@ func (m *SessionManager) list() []sessionInfo {
 	return result
 }
 
-func (m *SessionManager) interrupt(lang, session, cwd, disc string, graceSecs float64) (string, error) {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) interrupt(key string, graceSecs float64) (string, error) {
 	m.mu.Lock()
 	sess := m.sessions[key]
 	m.mu.Unlock()
