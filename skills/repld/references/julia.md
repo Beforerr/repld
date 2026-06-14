@@ -13,8 +13,10 @@ repld --fresh julia -t 4 -E 'Threads.nthreads()'
 
 ## Revise
 
-When `Revise` is available, repld loads it at runtime startup and calls `Revise.revise()` before each eval. After editing package code, expect definitions to update in the warm session.
+When `Revise` is available, repld loads it and calls `Revise.revise()` before each eval. Tracking depends on load path: dev'd packages pick up method and `const`/global changes. `includet`'d files only patch method unless files/modules set `__revise_mode__ = :eval`.
+
 Use `--fresh` for untrackable changes, such as:
+
 - Struct/type redefinition.
 - `using NewPkg` inside modules whose `Project.toml` did not list `NewPkg` when session was created.
 
