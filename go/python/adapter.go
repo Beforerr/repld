@@ -22,7 +22,12 @@ func (Adapter) DefaultExe() string {
 }
 
 func (Adapter) LaunchArgs(forwarded []string) []string {
-	return append([]string{"-u", "-q", "-i"}, forwarded...)
+	args := append([]string{"-u", "-q", "-i"}, forwarded...)
+	return append(args, "-c", bootstrapExec())
+}
+
+func bootstrapExec() string {
+	return fmt.Sprintf(`exec(bytes.fromhex("%s").decode())`, hex.EncodeToString([]byte(runtimeSource)))
 }
 
 // SessionKey: Python has no project notion; the interpreter path is the env.
@@ -33,9 +38,7 @@ func (a Adapter) SessionKey(exe string, _ []string) string {
 	return exe
 }
 
-func (Adapter) BootstrapStmt() string {
-	return fmt.Sprintf(`exec(bytes.fromhex("%s").decode())`, hex.EncodeToString([]byte(runtimeSource)))
-}
+func (Adapter) BootstrapStmt() string { return "" }
 
 func (Adapter) WrapEval(hexCode string, _ bool) string {
 	return fmt.Sprintf(`_repld_run("%s")`, hexCode)
@@ -59,8 +62,6 @@ finally:
 }
 
 func (Adapter) SentinelStmt(sentinel string) string {
-	// Assign write() results to _ so the interactive interpreter never echoes the
-	// char counts (the no-op displayhook isn't set yet during startup drain).
 	return fmt.Sprintf(`import sys as _s; _ = _s.stderr.write("%s\n"); _s.stderr.flush(); _ = _s.stdout.write("%s\n"); _s.stdout.flush()`, sentinel, sentinel)
 }
 

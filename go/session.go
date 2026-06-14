@@ -154,12 +154,6 @@ func (s *Session) start(exe string, workDir string) error {
 
 	var startup []startupChunk
 	capture := func(data string, isStderr bool) {
-		if s.lang == "python" && isStderr {
-			data = stripPythonPrompts(data)
-			if data == "" {
-				return
-			}
-		}
 		startup = append(startup, startupChunk{data: data, isStderr: isStderr})
 	}
 	if _, err := s.executeRaw("", capture, false, startupTimeout); err != nil {
@@ -196,13 +190,6 @@ func (s *Session) start(exe string, workDir string) error {
 		}
 	}()
 	return nil
-}
-
-func stripPythonPrompts(data string) string {
-	for strings.HasSuffix(data, ">>> ") || strings.HasSuffix(data, "... ") {
-		data = data[:len(data)-4]
-	}
-	return data
 }
 
 type controlWinner struct {
@@ -309,33 +296,78 @@ func parseControlLine(line string) *evalError {
 	return &evalError{short: short, smart: smart, full: full}
 }
 
+func sentinelOverlap(buf []byte, sentinel string) int {
+	n := len(buf)
+	if n > len(sentinel) {
+		n = len(sentinel)
+	}
+	for k := n; k > 0; k-- {
+		if string(buf[len(buf)-k:]) == sentinel[:k] {
+			return k
+		}
+	}
+	return 0
+}
+
+// Streams output until the closing sentinel line.
+// Only the trailing run of bytes that could begin the sentinel is held back.
 func (s *Session) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(string, bool)) (tail string, err error) {
 	const maxTail = 64 * 1024
 	var buf []byte
-	keep := func(s string) {
-		buf = append(buf, s...)
+	send := func(b []byte) {
+		if len(b) == 0 {
+			return
+		}
+		buf = append(buf, b...)
 		if len(buf) > maxTail {
 			buf = append(buf[:0], buf[len(buf)-maxTail:]...)
 		}
-	}
-	for {
-		line, rerr := r.ReadString('\n')
-		raw := strings.TrimRight(line, "\r\n")
-		if strings.HasSuffix(raw, s.sentinel) {
-			if prefix := strings.TrimSuffix(raw, s.sentinel); prefix != "" {
-				keep(prefix)
-				if emit != nil {
-					emit(prefix, isStderr)
-				}
-			}
-			return string(buf), nil
-		}
-		if rerr != nil {
-			return string(buf), rerr
-		}
-		keep(line)
 		if emit != nil {
-			emit(line, isStderr)
+			emit(string(b), isStderr)
+		}
+	}
+
+	var line []byte // bytes since the last '\n' (newline excluded)
+	sent := 0       // count of `line` already streamed
+
+	for {
+		b, rerr := r.ReadByte()
+		var chunk []byte
+		if rerr == nil {
+			chunk = append(chunk, b)
+			if n := r.Buffered(); n > 0 {
+				more := make([]byte, n)
+				m, _ := io.ReadFull(r, more)
+				chunk = append(chunk, more[:m]...)
+			}
+		}
+
+		for _, c := range chunk {
+			if c != '\n' {
+				line = append(line, c)
+				continue
+			}
+			raw := strings.TrimRight(string(line), "\r")
+			if strings.HasSuffix(raw, s.sentinel) {
+				if prefix := raw[:len(raw)-len(s.sentinel)]; sent < len(prefix) {
+					send([]byte(prefix[sent:]))
+				}
+				return string(buf), nil
+			}
+			send(line[sent:])
+			send([]byte{'\n'})
+			line = line[:0]
+			sent = 0
+		}
+
+		if safe := len(line) - sentinelOverlap(line, s.sentinel); safe > sent {
+			send(line[sent:safe])
+			sent = safe
+		}
+
+		if rerr != nil {
+			send(line[sent:])
+			return string(buf), rerr
 		}
 	}
 }
