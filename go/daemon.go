@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 type daemonState struct {
@@ -40,41 +42,15 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		return response{Output: formatTraceOutput(err, req.TraceLevel)}
 
 	case "sessions":
-		sessions := state.manager.list()
-		if len(sessions) == 0 {
+		items := state.manager.list()
+		if len(items) == 0 {
 			return response{Output: "No active sessions."}
 		}
-		sort.Slice(sessions, func(i, j int) bool {
-			return sessions[i].lang+sessions[i].label < sessions[j].lang+sessions[j].label
-		})
-		lines := []string{}
-		for _, s := range sessions {
-			label := s.label
-			if strings.HasPrefix(label, "~") {
-				label = "session " + strings.TrimPrefix(label, "~")
-			} else {
-				label = "dir " + label
-			}
-			line := ""
-			line += s.id + " "
-			line += fmt.Sprintf("[%s] %s", s.lang, label)
-			if s.project != "" {
-				line += " project=" + s.project
-			}
-			if !s.alive {
-				line += " status=dead"
-			} else if s.busyFor > 0 {
-				line += fmt.Sprintf(" busy=%.1fs", s.busyFor.Seconds())
-			}
-			if len(s.args) > 0 {
-				line += " args=" + strings.Join(s.args, " ")
-			}
-			if s.logFile != "" {
-				line += " log=" + s.logFile
-			}
-			lines = append(lines, line)
+		out, err := formatSessions(items)
+		if err != nil {
+			return errResp(err.Error())
 		}
-		return response{Output: strings.Join(lines, "\n")}
+		return response{Output: out}
 
 	case "interrupt":
 		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
@@ -108,6 +84,24 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 	default:
 		return errResp(fmt.Sprintf("Unknown action: %q", req.Action))
 	}
+}
+
+// formatSessions renders sessions as a YAML sequence with one flow-style
+// mapping per line: compact and scannable, yet a single parseable document.
+func formatSessions(items []sessionInfo) (string, error) {
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Lang+items[i].Session+items[i].Dir <
+			items[j].Lang+items[j].Session+items[j].Dir
+	})
+	var root yaml.Node
+	if err := root.Encode(items); err != nil {
+		return "", err
+	}
+	for _, item := range root.Content {
+		item.Style = yaml.FlowStyle
+	}
+	b, err := yaml.Marshal(&root)
+	return string(b), err
 }
 
 func errResp(msg string) response {

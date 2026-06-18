@@ -56,9 +56,10 @@ func newSentinel() string {
 	return fmt.Sprintf("__REPLD_%s__", hex.EncodeToString(b))
 }
 
-func newSession(adapter Adapter, sentinel string, fwd []string, logFile *os.File) *Session {
+func newSession(lang, sentinel string, fwd []string, logFile *os.File) *Session {
 	return &Session{
-		adapter:              adapter,
+		adapter:              adapterFor(lang),
+		lang:                 lang,
 		sentinel:             sentinel,
 		fwd:                  fwd,
 		logFile:              logFile,

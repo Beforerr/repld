@@ -239,7 +239,7 @@ repld flags:
 
 Commands (trace/interrupt/close locate a session by [exe], --session, or the
 short id shown by 'sessions'; an id prefix works when unambiguous):
-  sessions             List active sessions (all languages)
+  sessions             List active sessions (one per line)
   trace                Print the last saved error traceback for the session
   interrupt            Interrupt the in-flight eval (SIGKILL after 3s if unresponsive)
   close                Kill the session's interpreter and discard its state

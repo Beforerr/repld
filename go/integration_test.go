@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Beforerr/repld/go/julia"
 	"github.com/stretchr/testify/require"
 )
 
@@ -323,7 +322,7 @@ func TestCLINoInterpreterDoesNotCreateMissingNamedSession(t *testing.T) {
 }
 
 func TestExecuteRawWithoutControlDoesNotPanic(t *testing.T) {
-	sess := newSession(julia.Adapter{}, "SENTINEL", nil, nil)
+	sess := newSession("julia", "SENTINEL", nil, nil)
 	sess.stdin = &nopWriteCloser{}
 	sess.stdout = bufio.NewReader(strings.NewReader("SENTINEL\n"))
 	sess.stderr = bufio.NewReader(strings.NewReader("SENTINEL\n"))
