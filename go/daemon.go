@@ -74,6 +74,17 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		}
 		return response{Output: msg}
 
+	case "free":
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		if kerr != nil {
+			return errResp(kerr.Error())
+		}
+		msg, err := state.manager.free(key)
+		if err != nil {
+			return errResp(err.Error())
+		}
+		return response{Output: msg}
+
 	case "stop":
 		state.stopOnce.Do(func() { close(state.stopCh) })
 		return response{Output: "Daemon stopping."}
@@ -198,7 +209,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	if req.Fresh {
 		state.manager.restart(req.Lang, req.Session, req.Cwd, disc)
 	}
-	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args)
+	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args, req.OwnerPID, req.OwnerStart)
 	if err != nil {
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return
@@ -310,6 +321,8 @@ func serveDaemon(socketPath string, idleTimeout time.Duration) error {
 		stopCh:  make(chan struct{}),
 	}
 	state.lastRequest.Store(time.Now().UnixNano())
+
+	go state.manager.reapLoop(state.stopCh)
 
 	// Idle watchdog: closes listener when idle or stop requested
 	go func() {

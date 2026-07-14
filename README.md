@@ -58,6 +58,9 @@ repld stop                        # shutdown daemon
 
 `<exe>` is `julia`, `python3`, `R`, `wolframscript`, an absolute/relative interpreter path, etc. repld's own flags (`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except native eval/print flags (`-e`/`-c`/`-E`). Each call routes to a persistent session keyed by language + project + `--session`/cwd.
 
+A session auto-closes once the agent process that created it exits.
+`repld free <id | --session=LABEL>` pins a session against auto-closing; `repld --owner-pid 0 <exe> ...` opts out at creation.
+
 ## Architecture
 
 One Go binary is both the CLI client and the background daemon (auto-started on first use, stopped with `repld stop`). For design details, wire protocol, and key-file map, see [docs/architecture.md](docs/architecture.md).
