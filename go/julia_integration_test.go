@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -110,15 +111,16 @@ func TestJuliaWarmSession(t *testing.T) {
 		require.Empty(t, res.stdout)
 		require.Contains(t, res.stderr, "boom")
 		require.Contains(t, res.stderr, "Stacktrace:")
-		require.Contains(t, res.stderr, "run `trace")
+		hint := regexp.MustCompile("Trace saved: `repld trace ([k-z]{8})`\\.").FindStringSubmatch(res.stderr)
+		require.Len(t, hint, 2)
 		require.NotContains(t, res.stderr, "eval_user_input")
 
-		res = repldOK(t, socketPath, cwd, "trace", "--trace", "smart", "julia")
+		res = repldOK(t, socketPath, cwd, "trace", "--trace", "smart", hint[1])
 		require.Contains(t, res.stdout, "Stacktrace:")
 		require.Contains(t, res.stdout, "repld-eval")
 		require.NotContains(t, res.stdout, "eval_user_input")
 
-		res = repldOK(t, socketPath, cwd, "trace", "--trace", "full", "julia")
+		res = repldOK(t, socketPath, cwd, "trace", "--trace", "full", hint[1])
 		require.Contains(t, res.stdout, "include_string")
 
 		res = repldErr(t, socketPath, cwd, "--trace", "full", "julia", "-e", `let f = () -> error("boom"); g = () -> f(); g(); end`)

@@ -75,6 +75,13 @@ func TestHandleRequest_UnknownAction(t *testing.T) {
 	require.NotEmpty(t, resp.Error)
 }
 
+func TestFormatErrorTraceHintIncludesSessionID(t *testing.T) {
+	err := &evalError{short: "short", smart: "smart\n", full: "full"}
+	require.Equal(t, "smart\nTrace saved: `repld trace klmnopqr`.", formatError(err, "smart", "klmnopqr"))
+	require.Equal(t, "short\n\nTrace saved: `repld trace klmnopqr`.", formatError(err, "short", "klmnopqr"))
+	require.Equal(t, "full", formatError(err, "full", "klmnopqr"))
+}
+
 func TestHandleRequest_Stop(t *testing.T) {
 	state := newTestState()
 	resp := handleRequest(state, protocolRequest{Action: "stop"})

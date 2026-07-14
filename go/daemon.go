@@ -130,21 +130,22 @@ func normalizedTraceLevel(level string) string {
 	}
 }
 
-func formatError(err *evalError, level string) string {
+func formatError(err *evalError, level, sessionID string) string {
 	traceHint := strings.TrimSpace(err.smart) != strings.TrimSpace(err.short)
+	hint := fmt.Sprintf("Trace saved: `repld trace %s`.", sessionID)
 	switch normalizedTraceLevel(level) {
 	case "short":
 		if !traceHint {
 			return err.short
 		}
-		return err.short + "\n\nTrace saved: run `trace --trace [smart|full]` to inspect"
+		return err.short + "\n\n" + hint
 	case "full":
 		return err.full
 	default:
 		if !traceHint {
 			return err.short
 		}
-		return err.smart + "Trace saved: run `trace` to inspect"
+		return err.smart + hint
 	}
 }
 
@@ -243,7 +244,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		}
 		if evalErr, ok := err.(*evalError); ok {
 			state.manager.recordError(req.Lang, req.Session, req.Cwd, disc, evalErr)
-			emit(streamFrame{Done: true, Error: formatError(evalErr, req.TraceLevel)})
+			emit(streamFrame{Done: true, Error: formatError(evalErr, req.TraceLevel, sess.id)})
 			return
 		}
 		emit(streamFrame{Done: true, Error: err.Error()})
