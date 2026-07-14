@@ -98,12 +98,12 @@ func TestRInterruptSurvives(t *testing.T) {
 	var sessOut string
 	for time.Now().Before(deadline) {
 		sessOut = repldOK(t, socketPath, cwd, "sessions").stdout
-		if strings.Contains(sessOut, "busy=") {
+		if strings.Contains(sessOut, "status: busy") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	require.Contains(t, sessOut, "busy=", "sessions listing should show busy= while a call is in flight")
+	require.Contains(t, sessOut, "status: busy", "sessions listing should show status: busy while a call is in flight")
 
 	irq := repldOK(t, socketPath, cwd, "interrupt", "--session", "rirq")
 	require.Contains(t, irq.stdout, "interrupted", "R must survive SIGINT, got: %q", irq.stdout)

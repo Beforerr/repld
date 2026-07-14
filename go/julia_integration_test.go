@@ -235,12 +235,12 @@ func TestInterruptBusyAndUnblocks(t *testing.T) {
 	var sessOut string
 	for time.Now().Before(deadline) {
 		sessOut = repldOK(t, socketPath, cwd, "sessions").stdout
-		if strings.Contains(sessOut, "busy=") {
+		if strings.Contains(sessOut, "status: busy") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	require.Contains(t, sessOut, "busy=", "sessions listing should show busy= while a call is in flight")
+	require.Contains(t, sessOut, "status: busy", "sessions listing should show status: busy while a call is in flight")
 
 	irq := repldOK(t, socketPath, cwd, "interrupt", "julia")
 	require.Contains(t, irq.stdout, "interrupted", "sleep must survive the interrupt, got: %q", irq.stdout)
@@ -289,7 +289,7 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 	// Wait until the session reports busy.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=") {
+		if strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "status: busy") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -301,7 +301,7 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 	// The session must stop being busy promptly. Without disconnect handling,
 	// the orphaned sleep(60) would keep the session busy for ~60s.
 	require.Eventually(t, func() bool {
-		return !strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=")
+		return !strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "status: busy")
 	}, 10*time.Second, 100*time.Millisecond, "client disconnect should have interrupted the orphaned eval")
 
 	// Session must be usable again AND have survived with state intact
@@ -381,7 +381,7 @@ func TestJuliaWorldAgeDisplay(t *testing.T) {
 func TestKillRunsAtexitHooks(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
-	sess := newSession(julia.Adapter{}, newSentinel(), nil, nil)
+	sess := newSession("julia", newSentinel(), nil, nil)
 	require.NoError(t, sess.start("", cwd))
 
 	marker := filepath.Join(t.TempDir(), "atexit.marker")
@@ -431,7 +431,7 @@ func TestQueuedDisconnectDoesNotInterruptRunningEval(t *testing.T) {
 	}))
 
 	require.Eventually(t, func() bool {
-		return strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "busy=")
+		return strings.Contains(sendRequest(t, socketPath, protocolRequest{Action: "sessions"}).Output, "status: busy")
 	}, 5*time.Second, 50*time.Millisecond, "conn1 eval should be running")
 
 	// conn2: same session, queues behind conn1, then disconnects abruptly.

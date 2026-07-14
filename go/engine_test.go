@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Beforerr/repld/go/julia"
-	"github.com/Beforerr/repld/go/python"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestAcceptControl(t *testing.T) {
@@ -91,23 +90,40 @@ func TestHandleRequest_SessionsList(t *testing.T) {
 	state := newTestState()
 	// A julia dir session pinned to a project; a global labeled session; a dead
 	// python dir session. The key is lang-prefixed; --session labels are global.
-	jl := newSession(julia.Adapter{}, "s", []string{"--project=/env"}, nil)
-	jl.lang = "julia"
+	jl := newSession("julia", "s", []string{"--project=/env"}, nil)
 	jl.id = "kqzmkqzm"
-	named := newSession(julia.Adapter{}, "s", nil, nil)
-	named.lang = "julia"
-	py := newSession(python.Adapter{}, "s", nil, nil)
-	py.lang = "python"
+	named := newSession("julia", "s", nil, nil)
+	py := newSession("python", "s", nil, nil)
 	py.dead.Store(true)
-	state.manager.sessions["julia\x00/work\x00/env"] = jl
-	state.manager.sessions["~scratch"] = named
-	state.manager.sessions["python\x00/work\x00"] = py
+	state.manager.sessions[sessionKey{lang: "julia", route: "/work", disc: "/env"}] = jl
+	state.manager.sessions[sessionKey{label: "scratch"}] = named
+	state.manager.sessions[sessionKey{lang: "python", route: "/work"}] = py
 
 	resp := handleRequest(state, protocolRequest{Action: "sessions"})
 	require.Empty(t, resp.Error)
-	require.Equal(t, `kqzmkqzm [julia] dir /work project=/env args=--project=/env
- [julia] session scratch project=@.
- [python] dir /work status=dead`, resp.Output)
+	require.Equal(t, `- {id: kqzmkqzm, lang: julia, dir: /work, args: [--project=/env]}
+- {lang: julia, session: scratch, args: [--project=@.]}
+- {lang: python, dir: /work, status: dead}
+`, resp.Output)
+}
+
+func TestHandleRequest_SessionsParseableYAML(t *testing.T) {
+	state := newTestState()
+	jl := newSession("julia", "s", []string{"--project=/env"}, nil)
+	jl.id = "kqzmkqzm"
+	named := newSession("julia", "s", nil, nil)
+	state.manager.sessions[sessionKey{lang: "julia", route: "/work", disc: "/env"}] = jl
+	state.manager.sessions[sessionKey{label: "scratch"}] = named
+
+	resp := handleRequest(state, protocolRequest{Action: "sessions"})
+	require.Empty(t, resp.Error)
+
+	var items []sessionInfo
+	require.NoError(t, yaml.Unmarshal([]byte(resp.Output), &items))
+	require.Len(t, items, 2)
+	require.Equal(t, "kqzmkqzm", items[0].ID)
+	require.Equal(t, "julia", items[0].Lang)
+	require.Equal(t, "scratch", items[1].Session)
 }
 
 func TestInterruptUnknownSession(t *testing.T) {
@@ -124,9 +140,8 @@ func TestCloseUnknownSession(t *testing.T) {
 
 func TestCloseSession(t *testing.T) {
 	state := newTestState()
-	sess := newSession(julia.Adapter{}, "s", nil, nil)
-	sess.lang = "julia"
-	state.manager.sessions["~scratch"] = sess
+	sess := newSession("julia", "s", nil, nil)
+	state.manager.sessions[sessionKey{label: "scratch"}] = sess
 
 	resp := handleRequest(state, protocolRequest{Action: "close", Session: "scratch", Cwd: t.TempDir()})
 	require.Empty(t, resp.Error)
@@ -137,10 +152,9 @@ func TestCloseSession(t *testing.T) {
 
 func TestCloseSessionByID(t *testing.T) {
 	state := newTestState()
-	sess := newSession(julia.Adapter{}, "s", nil, nil)
-	sess.lang = "julia"
+	sess := newSession("julia", "s", nil, nil)
 	sess.id = "kqzm"
-	state.manager.sessions["julia\x00/work\x00@."] = sess
+	state.manager.sessions[sessionKey{lang: "julia", route: "/work", disc: "@."}] = sess
 
 	// Unique prefix resolves regardless of cwd.
 	resp := handleRequest(state, protocolRequest{Action: "close", ID: "kq", Cwd: t.TempDir()})
@@ -155,24 +169,25 @@ func TestCloseSessionByID(t *testing.T) {
 func TestKeyForIDPrefix(t *testing.T) {
 	m := newSessionManager()
 	defer m.shutdown()
-	a := newSession(julia.Adapter{}, "s", nil, nil)
+	a := newSession("julia", "s", nil, nil)
 	a.id = "kqzm"
-	b := newSession(julia.Adapter{}, "s", nil, nil)
+	b := newSession("julia", "s", nil, nil)
 	b.id = "kxyz"
-	m.sessions["julia\x00/a\x00@."] = a
-	m.sessions["julia\x00/b\x00@."] = b
+	m.sessions[sessionKey{lang: "julia", route: "/a", disc: "@."}] = a
+	m.sessions[sessionKey{lang: "julia", route: "/b", disc: "@."}] = b
 
-	key, err := m.keyForID("kq")
+	key, ok, err := m.keyForID("kq")
 	require.NoError(t, err)
-	require.Equal(t, "julia\x00/a\x00@.", key)
+	require.True(t, ok)
+	require.Equal(t, sessionKey{lang: "julia", route: "/a", disc: "@."}, key)
 
-	_, err = m.keyForID("k") // shared prefix → ambiguous
+	_, _, err = m.keyForID("k") // shared prefix → ambiguous
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ambiguous")
 
-	key, err = m.keyForID("zz") // no match
+	_, ok, err = m.keyForID("zz") // no match
 	require.NoError(t, err)
-	require.Equal(t, "", key)
+	require.False(t, ok)
 }
 
 func TestSessionManagerKey(t *testing.T) {
@@ -180,8 +195,8 @@ func TestSessionManagerKey(t *testing.T) {
 	defer m.shutdown()
 
 	// key = lang + cwd + discriminant (project); label keys are global.
-	require.Equal(t, "julia\x00/w\x00@.", m.key("julia", "", "/w", "@."))
-	require.Equal(t, "python\x00/w\x00", m.key("python", "", "/w", ""))
+	require.Equal(t, sessionKey{lang: "julia", route: "/w", disc: "@."}, m.key("julia", "", "/w", "@."))
+	require.Equal(t, sessionKey{lang: "python", route: "/w"}, m.key("python", "", "/w", ""))
 	// same dir, distinct by language or by project → distinct sessions.
 	require.NotEqual(t, m.key("julia", "", "/w", "@."), m.key("python", "", "/w", ""))
 	require.NotEqual(t, m.key("julia", "", "/w", "@."), m.key("julia", "", "/w", "/env"))
@@ -189,6 +204,6 @@ func TestSessionManagerKey(t *testing.T) {
 	require.Equal(t, m.key("julia", "", "/a", absProject), m.key("julia", "", "/b", absProject))
 	require.NotEqual(t, m.key("julia", "", "/a", "@."), m.key("julia", "", "/b", "@."))
 	// a --session label is global: same key regardless of language/project.
-	require.Equal(t, "~scratch", m.key("julia", "scratch", "/w", "@."))
-	require.Equal(t, "~scratch", m.key("python", "scratch", "/other", ""))
+	require.Equal(t, sessionKey{label: "scratch"}, m.key("julia", "scratch", "/w", "@."))
+	require.Equal(t, sessionKey{label: "scratch"}, m.key("python", "scratch", "/other", ""))
 }

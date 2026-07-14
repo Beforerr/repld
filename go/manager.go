@@ -14,27 +14,63 @@ import (
 
 type SessionManager struct {
 	mu         sync.Mutex
-	sessions   map[string]*Session
-	lastErrors map[string]*evalError
+	sessions   map[sessionKey]*Session
+	lastErrors map[sessionKey]*evalError
 	sf         singleflight.Group
 	logDir     string
+}
+
+type sessionKey struct {
+	label string
+	lang  string
+	route string
+	disc  string
+}
+
+func (k sessionKey) String() string {
+	if k.label != "" {
+		return "session:" + k.label
+	}
+	if k.disc == "" {
+		return k.lang + ":" + k.route
+	}
+	return k.lang + ":" + k.route + ":" + k.disc
+}
+
+func (k sessionKey) logName() string {
+	if k.label != "" {
+		return "session-" + safeLogComponent(k.label)
+	}
+	parts := []string{safeLogComponent(k.lang), safeLogComponent(k.route)}
+	if k.disc != "" {
+		parts = append(parts, safeLogComponent(k.disc))
+	}
+	return strings.Join(parts, "-")
+}
+
+func safeLogComponent(s string) string {
+	s = strings.NewReplacer("/", "_", "\\", "_", ":", "_", "\"", "_").Replace(strings.Trim(s, "/"))
+	if s == "" {
+		return "default"
+	}
+	return s
 }
 
 func newSessionManager() *SessionManager {
 	logDir, _ := os.MkdirTemp("", "repld-logs-")
 	return &SessionManager{
-		sessions:   make(map[string]*Session),
-		lastErrors: make(map[string]*evalError),
+		sessions:   make(map[sessionKey]*Session),
+		lastErrors: make(map[sessionKey]*evalError),
 		logDir:     logDir,
 	}
 }
 
 // key namespaces a session. A --session label is global (reusable without
-// re-specifying interpreter). Otherwise it's lang + cwd + disc, where disc
-// is the adapter's per-environment discriminant (Julia's --project).
-func (m *SessionManager) key(lang, session, cwd, disc string) string {
+// re-specifying interpreter). Otherwise route is cwd or the adapter's
+// per-environment location (Julia's --project).
+func (m *SessionManager) key(lang, session, cwd, disc string) sessionKey {
 	if session != "" {
-		return "~" + session
+		return sessionKey{label: session}
 	}
 	route := cwd
 	if lang == "julia" && disc != "" && disc != "@." {
@@ -44,7 +80,7 @@ func (m *SessionManager) key(lang, session, cwd, disc string) string {
 		}
 		route = filepath.Clean(route)
 	}
-	return lang + "\x00" + route + "\x00" + disc
+	return sessionKey{lang: lang, route: route, disc: disc}
 }
 
 // from k-z : IDs never look like exe names, paths
@@ -72,50 +108,39 @@ func (m *SessionManager) uniqueIDLocked() string {
 	}
 }
 
-func (m *SessionManager) keyForID(prefix string) (string, error) {
+func (m *SessionManager) keyForID(prefix string) (sessionKey, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	match := ""
+	var match sessionKey
+	found := false
 	for key, sess := range m.sessions {
 		if sess.id != "" && strings.HasPrefix(sess.id, prefix) {
-			if match != "" {
-				return "", fmt.Errorf("session id %q is ambiguous", prefix)
+			if found {
+				return sessionKey{}, false, fmt.Errorf("session id %q is ambiguous", prefix)
 			}
 			match = key
+			found = true
 		}
 	}
-	return match, nil
+	return match, found, nil
 }
 
-func (m *SessionManager) targetKey(id, lang, session, cwd, disc string) (string, error) {
+func (m *SessionManager) targetKey(id, lang, session, cwd, disc string) (sessionKey, error) {
 	if id != "" {
-		key, err := m.keyForID(id)
+		key, ok, err := m.keyForID(id)
 		if err != nil {
-			return "", err
+			return sessionKey{}, err
 		}
-		if key == "" {
-			return "", fmt.Errorf("no session with id %q", id)
+		if !ok {
+			return sessionKey{}, fmt.Errorf("no session with id %q", id)
 		}
 		return key, nil
 	}
 	return m.key(lang, session, cwd, disc), nil
 }
 
-// keyLabel is the human label for a key: a "~label" session label, else the cwd
-// (the lang prefix and project discriminant are shown separately).
-func keyLabel(key string) string {
-	if !strings.Contains(key, "\x00") {
-		return key
-	}
-	return strings.SplitN(key, "\x00", 3)[1]
-}
-
-func (m *SessionManager) openLogFile(key string) *os.File {
-	safe := strings.NewReplacer("/", "_", "\\", "_", "\x00", "-").Replace(strings.Trim(key, "/~"))
-	if safe == "" {
-		safe = "default"
-	}
-	f, _ := os.OpenFile(filepath.Join(m.logDir, safe+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func (m *SessionManager) openLogFile(key sessionKey) *os.File {
+	f, _ := os.OpenFile(filepath.Join(m.logDir, key.logName()+".log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	return f
 }
 
@@ -136,7 +161,7 @@ func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []strin
 		return sess, nil
 	}
 
-	v, err, _ := m.sf.Do(key, func() (any, error) {
+	v, err, _ := m.sf.Do(key.String(), func() (any, error) {
 		m.mu.Lock()
 		sess := m.sessions[key]
 		m.mu.Unlock()
@@ -153,8 +178,7 @@ func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []strin
 			m.mu.Unlock()
 		}
 
-		sess = newSession(lc.adapter, newSentinel(), fwd, m.openLogFile(key))
-		sess.lang = lang
+		sess = newSession(lang, newSentinel(), fwd, m.openLogFile(key))
 		if err := sess.start(exe, cwd); err != nil {
 			return nil, err
 		}
@@ -190,7 +214,7 @@ func (m *SessionManager) restart(lang, session, cwd, disc string) {
 	}
 }
 
-func (m *SessionManager) close(key string) (string, error) {
+func (m *SessionManager) close(key sessionKey) (string, error) {
 	m.mu.Lock()
 	sess := m.sessions[key]
 	delete(m.sessions, key)
@@ -218,21 +242,31 @@ func (m *SessionManager) recordError(lang, session, cwd, disc string, err *evalE
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) lastError(key string) *evalError {
+func (m *SessionManager) lastError(key sessionKey) *evalError {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lastErrors[key]
 }
 
+// sessionInfo is both the internal listing row and the YAML output shape.
 type sessionInfo struct {
-	id      string
-	lang    string
-	label   string // session label or cwd
-	project string // environment discriminant (Julia --project); "" if none
-	alive   bool
-	args    []string
-	logFile string
-	busyFor time.Duration // 0 when idle
+	ID      string   `yaml:"id,omitempty"`
+	Lang    string   `yaml:"lang"`
+	Dir     string   `yaml:"dir,omitempty"`     // working directory; "" for named sessions
+	Session string   `yaml:"session,omitempty"` // named-session label; "" for cwd-keyed sessions
+	Status  string   `yaml:"status,omitempty"`  // "dead" or "busy"; "" when idle and alive
+	Busy    float64  `yaml:"busy,omitempty"`    // seconds in-flight; set only while busy
+	Args    []string `yaml:"args,omitempty"`    // effective launch args (Julia's implicit --project is made explicit)
+	Log     string   `yaml:"log,omitempty"`
+}
+
+func hasProjectFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--project" || strings.HasPrefix(a, "--project=") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *SessionManager) list() []sessionInfo {
@@ -242,27 +276,34 @@ func (m *SessionManager) list() []sessionInfo {
 	result := make([]sessionInfo, 0, len(m.sessions))
 	for key, sess := range m.sessions {
 		info := sessionInfo{
-			id:    sess.id,
-			lang:  sess.lang,
-			label: keyLabel(key),
-			alive: sess.isAlive(),
-			args:  sess.fwd,
+			ID:   sess.id,
+			Lang: sess.lang,
+			Args: sess.fwd,
 		}
-		if sess.lang == "julia" {
-			info.project = sess.adapter.SessionKey("", sess.fwd)
+		if key.label != "" {
+			info.Session = key.label
+		} else {
+			info.Dir = key.route
 		}
-		if since := sess.busySince.Load(); since != 0 {
-			info.busyFor = now.Sub(time.Unix(0, since))
+		// Surface Julia's implicit project so args reflect the real launch.
+		if sess.lang == "julia" && !hasProjectFlag(sess.fwd) {
+			info.Args = append([]string{"--project=" + sess.adapter.SessionKey("", sess.fwd)}, sess.fwd...)
+		}
+		if !sess.isAlive() {
+			info.Status = "dead"
+		} else if since := sess.busySince.Load(); since != 0 {
+			info.Status = "busy"
+			info.Busy = now.Sub(time.Unix(0, since)).Seconds()
 		}
 		if sess.logFile != nil {
-			info.logFile = sess.logFile.Name()
+			info.Log = sess.logFile.Name()
 		}
 		result = append(result, info)
 	}
 	return result
 }
 
-func (m *SessionManager) interrupt(key string, graceSecs float64) (string, error) {
+func (m *SessionManager) interrupt(key sessionKey, graceSecs float64) (string, error) {
 	m.mu.Lock()
 	sess := m.sessions[key]
 	m.mu.Unlock()
@@ -291,7 +332,7 @@ func (m *SessionManager) shutdown() {
 	for _, s := range m.sessions {
 		sessions = append(sessions, s)
 	}
-	m.sessions = make(map[string]*Session)
+	m.sessions = make(map[sessionKey]*Session)
 	m.mu.Unlock()
 
 	for _, s := range sessions {

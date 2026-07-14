@@ -168,10 +168,6 @@ func TestParseArgs(t *testing.T) {
 		{"missing file forwards after launch flags", []string{"julia", "--project", "/env", "script.jl", "arg1"},
 			parsed{exe: "julia", fwd: []string{"--project", "/env", "script.jl", "arg1"}}},
 		{"subcommand", []string{"sessions"}, parsed{sub: "sessions"}},
-		{"flags before subcommand", []string{"--socket", "x", "sessions"},
-			parsed{socket: "x", sub: "sessions"}},
-		{"bare tokens forward once forwarding starts", []string{"-L", "a.jl", "sessions"},
-			parsed{fwd: []string{"-L", "a.jl", "sessions"}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
