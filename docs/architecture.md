@@ -37,8 +37,6 @@ client-side (`absExe`); a bare name is looked up in PATH on the daemon.
 (`go/daemon.go`). The per-session `Adapter` is chosen from each request's `lang` (`SessionManager.getOrCreate`).
 Runs until `stop` (or optional `daemon --idle-timeout SECS`; default 0 = never).
 
-**Owner lease**: the daemon closes a session after its owning process exits.
-Ownerless sessions persist until closed; `repld free` removes an existing lease.
 
 **Session** (`go/session.go`): wraps one interpreter subprocess. The adapter
 supplies the launch argv, the embedded runtime source + its load statement, the

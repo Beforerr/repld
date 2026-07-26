@@ -58,7 +58,7 @@ repld stop                        # shutdown daemon
 
 `<exe>` is `julia`, `python3`, `R`, `wolframscript`, an absolute/relative interpreter path, etc. repld's own flags (`--session`/`--lang`/`--trace`/`--fresh`) go before `<exe>`; after it, every flag forwards verbatim to the interpreter (e.g. Julia's `--project=DIR`, `+1.11` for juliaup) except native eval/print flags (`-e`/`-c`/`-E`). Each call routes to a persistent session keyed by language + interpreter + `--session`/cwd. Forwarded interpreter flags configure a session only when it starts.
 
-A session auto-closes once the agent process that created it exits.
+A session created from Claude Code or Codex auto-closes once its agent process exits.
 `repld free <id | --session=LABEL>` pins a session against auto-closing; `repld --owner-pid 0 <exe> ...` opts out at creation.
 
 ## Architecture
