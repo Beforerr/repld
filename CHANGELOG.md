@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Julia `--project` is now startup-only, like other interpreter flags; later calls reuse cwd session without repeating it.
+
 ## [1.0.0]
 
 Reworked into a single language-agnostic binary, `repld`, that selects interpreter from a leading exe positional.

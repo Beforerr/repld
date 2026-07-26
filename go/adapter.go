@@ -6,9 +6,6 @@ type Adapter interface {
 
 	LaunchArgs(forwarded []string) []string
 
-	// SessionKey separates environments: project, interpreter, or runtime identity.
-	SessionKey(exe string, forwarded []string) string
-
 	// BootstrapStmt loads the embedded runtime.
 	BootstrapStmt() string
 	WrapEval(hexCode string, printResult bool) string

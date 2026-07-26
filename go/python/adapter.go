@@ -30,14 +30,6 @@ func bootstrapExec() string {
 	return fmt.Sprintf(`exec(bytes.fromhex("%s").decode())`, hex.EncodeToString([]byte(runtimeSource)))
 }
 
-// SessionKey: Python has no project notion; the interpreter path is the env.
-func (a Adapter) SessionKey(exe string, _ []string) string {
-	if exe == "" {
-		return a.DefaultExe()
-	}
-	return exe
-}
-
 func (Adapter) BootstrapStmt() string { return "" }
 
 func (Adapter) WrapEval(hexCode string, _ bool) string {

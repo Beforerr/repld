@@ -34,10 +34,8 @@ re-execs itself as `daemon` if none is running. A relative exe path is abs-ified
 client-side (`absExe`); a bare name is looked up in PATH on the daemon.
 
 **Daemon mode** (`daemon` subcommand): one language-agnostic server
-(`go/daemon.go`). The per-session `Adapter` is chosen from each request's `lang` (`SessionManager.getOrCreate`). Sessions
-are keyed by `lang` + (`--session` label / project / cwd); the lang prefix keeps
-same-dir sessions of different languages distinct. Runs until `stop` (or an
-optional `daemon --idle-timeout SECS`; default 0 = never).
+(`go/daemon.go`). The per-session `Adapter` is chosen from each request's `lang` (`SessionManager.getOrCreate`).
+Runs until `stop` (or optional `daemon --idle-timeout SECS`; default 0 = never).
 
 **Owner lease**: the daemon closes a session after its owning process exits.
 Ownerless sessions persist until closed; `repld free` removes an existing lease.

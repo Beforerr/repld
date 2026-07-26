@@ -28,13 +28,6 @@ func (Adapter) LaunchArgs(forwarded []string) []string {
 	return append(args, "-script", f.Name())
 }
 
-func (a Adapter) SessionKey(exe string, _ []string) string {
-	if exe == "" {
-		return a.DefaultExe()
-	}
-	return exe
-}
-
 func (Adapter) BootstrapStmt() string { return "" }
 
 func (Adapter) WrapEval(hexCode string, printResult bool) string {
