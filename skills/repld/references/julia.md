@@ -1,14 +1,12 @@
 # `repld julia`
 
-## Session routing
-
-Without specifying `--session`, distinct projects correspond to different sessions.
+## Examples
 
 ```bash
-repld julia -e 'include("setup.jl")'
-repld julia -e 'using Pkg; Pkg.activate("test"); using ImportTestPackageOnce'
-repld julia --project=@temp -e 'using Pkg; Pkg.add("Example")'
-repld julia +1.11 -E 'VERSION' # default project env is "@."
+repld julia --project=test -e 'using ImportTestPackageOnce'
+repld julia -E 'x = ImportTestPackageOnce.result()'
+repld --fresh julia --project=@temp -e 'using Pkg; Pkg.add("Example")'
+repld --session jl111 julia +1.11 -E 'VERSION'
 repld --fresh julia -t 4 -E 'Threads.nthreads()'
 ```
 
@@ -16,7 +14,7 @@ repld --fresh julia -t 4 -E 'Threads.nthreads()'
 
 When `Revise` is available, repld loads it and calls `Revise.revise()` before each eval. Tracking depends on load path: dev'd packages pick up method and `const`/global changes. `includet`'d files only patch method unless files/modules set `__revise_mode__ = :eval`.
 
-Use `--fresh` for untrackable changes, such as:
+Untrackable changes include:
 
 - Struct/type redefinition.
 - `using NewPkg` inside modules whose `Project.toml` did not list `NewPkg` when session was created.

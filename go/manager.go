@@ -23,29 +23,22 @@ type SessionManager struct {
 type sessionKey struct {
 	label string
 	lang  string
-	route string
-	disc  string
+	cwd   string
+	exe   string
 }
 
 func (k sessionKey) String() string {
 	if k.label != "" {
 		return "session:" + k.label
 	}
-	if k.disc == "" {
-		return k.lang + ":" + k.route
-	}
-	return k.lang + ":" + k.route + ":" + k.disc
+	return k.lang + ":" + k.cwd + ":" + k.exe
 }
 
 func (k sessionKey) logName() string {
 	if k.label != "" {
 		return "session-" + safeLogComponent(k.label)
 	}
-	parts := []string{safeLogComponent(k.lang), safeLogComponent(k.route)}
-	if k.disc != "" {
-		parts = append(parts, safeLogComponent(k.disc))
-	}
-	return strings.Join(parts, "-")
+	return strings.Join([]string{safeLogComponent(k.lang), safeLogComponent(k.cwd), safeLogComponent(k.exe)}, "-")
 }
 
 func safeLogComponent(s string) string {
@@ -65,22 +58,19 @@ func newSessionManager() *SessionManager {
 	}
 }
 
-// key namespaces a session. A --session label is global (reusable without
-// re-specifying interpreter). Otherwise route is cwd or the adapter's
-// per-environment location (Julia's --project).
-func (m *SessionManager) key(lang, session, cwd, disc string) sessionKey {
+// A --session label is global and reusable without re-specifying interpreter.
+// Otherwise interpreter identity and cwd select the session; forwarded startup
+// args apply only when that session is created.
+func (m *SessionManager) key(lang, session, cwd, exe string) sessionKey {
 	if session != "" {
 		return sessionKey{label: session}
 	}
-	route := cwd
-	if lang == "julia" && disc != "" && disc != "@." {
-		route = disc
-		if !strings.HasPrefix(route, "@") && !filepath.IsAbs(route) {
-			route = filepath.Join(cwd, route)
+	if exe == "" {
+		if lc, ok := langs[lang]; ok {
+			exe = lc.adapter.DefaultExe()
 		}
-		route = filepath.Clean(route)
 	}
-	return sessionKey{lang: lang, route: route, disc: disc}
+	return sessionKey{lang: lang, cwd: cwd, exe: exe}
 }
 
 // from k-z : IDs never look like exe names, paths
@@ -125,7 +115,7 @@ func (m *SessionManager) keyForID(prefix string) (sessionKey, bool, error) {
 	return match, found, nil
 }
 
-func (m *SessionManager) targetKey(id, lang, session, cwd, disc string) (sessionKey, error) {
+func (m *SessionManager) targetKey(id, lang, session, cwd, exe string) (sessionKey, error) {
 	if id != "" {
 		key, ok, err := m.keyForID(id)
 		if err != nil {
@@ -136,7 +126,7 @@ func (m *SessionManager) targetKey(id, lang, session, cwd, disc string) (session
 		}
 		return key, nil
 	}
-	return m.key(lang, session, cwd, disc), nil
+	return m.key(lang, session, cwd, exe), nil
 }
 
 func (m *SessionManager) openLogFile(key sessionKey) *os.File {
@@ -147,12 +137,8 @@ func (m *SessionManager) openLogFile(key sessionKey) *os.File {
 // forwarded args apply only when a session is first created;
 // a live session for the key is reused as-is.
 func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []string, ownerPID int, ownerStart int64) (*Session, error) {
-	lc, known := langs[lang]
-	disc := ""
-	if known {
-		disc = lc.adapter.SessionKey(exe, fwd)
-	}
-	key := m.key(lang, session, cwd, disc)
+	_, known := langs[lang]
+	key := m.key(lang, session, cwd, exe)
 
 	m.mu.Lock()
 	sess := m.sessions[key]
@@ -196,15 +182,15 @@ func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []strin
 	return v.(*Session), nil
 }
 
-func (m *SessionManager) remove(lang, session, cwd, disc string) {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) remove(lang, session, cwd, exe string) {
+	key := m.key(lang, session, cwd, exe)
 	m.mu.Lock()
 	delete(m.sessions, key)
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) restart(lang, session, cwd, disc string) {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) restart(lang, session, cwd, exe string) {
+	key := m.key(lang, session, cwd, exe)
 	m.mu.Lock()
 	sess := m.sessions[key]
 	delete(m.sessions, key)
@@ -268,16 +254,16 @@ func (m *SessionManager) reapLoop(stop <-chan struct{}) {
 	}
 }
 
-func (m *SessionManager) hasLiveSession(lang, session, cwd, disc string) bool {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) hasLiveSession(lang, session, cwd, exe string) bool {
+	key := m.key(lang, session, cwd, exe)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sess := m.sessions[key]
 	return sess != nil && sess.isAlive()
 }
 
-func (m *SessionManager) recordError(lang, session, cwd, disc string, err *evalError) {
-	key := m.key(lang, session, cwd, disc)
+func (m *SessionManager) recordError(lang, session, cwd, exe string, err *evalError) {
+	key := m.key(lang, session, cwd, exe)
 	m.mu.Lock()
 	m.lastErrors[key] = err
 	m.mu.Unlock()
@@ -298,17 +284,8 @@ type sessionInfo struct {
 	Status  string   `yaml:"status,omitempty"`  // "dead" or "busy"; "" when idle and alive
 	Busy    float64  `yaml:"busy,omitempty"`    // seconds in-flight; set only while busy
 	Owner   int      `yaml:"owner,omitempty"`   // owner pid whose exit auto-closes the session; 0 = pinned
-	Args    []string `yaml:"args,omitempty"`    // effective launch args (Julia's implicit --project is made explicit)
+	Args    []string `yaml:"args,omitempty"`    // startup args supplied when session was created
 	Log     string   `yaml:"log,omitempty"`
-}
-
-func hasProjectFlag(args []string) bool {
-	for _, a := range args {
-		if a == "--project" || strings.HasPrefix(a, "--project=") {
-			return true
-		}
-	}
-	return false
 }
 
 func (m *SessionManager) list() []sessionInfo {
@@ -326,11 +303,7 @@ func (m *SessionManager) list() []sessionInfo {
 		if key.label != "" {
 			info.Session = key.label
 		} else {
-			info.Dir = key.route
-		}
-		// Surface Julia's implicit project so args reflect the real launch.
-		if sess.lang == "julia" && !hasProjectFlag(sess.fwd) {
-			info.Args = append([]string{"--project=" + sess.adapter.SessionKey("", sess.fwd)}, sess.fwd...)
+			info.Dir = key.cwd
 		}
 		if !sess.isAlive() {
 			info.Status = "dead"

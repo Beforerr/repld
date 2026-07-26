@@ -2,10 +2,10 @@ package main
 
 import (
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/Beforerr/repld/go/python"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -95,21 +95,21 @@ func TestHandleRequest_Stop(t *testing.T) {
 
 func TestHandleRequest_SessionsList(t *testing.T) {
 	state := newTestState()
-	// A julia dir session pinned to a project; a global labeled session; a dead
+	// A Julia cwd session with startup args; a global labeled session; a dead
 	// python dir session. The key is lang-prefixed; --session labels are global.
 	jl := newSession("julia", "s", []string{"--project=/env"}, nil)
 	jl.id = "kqzmkqzm"
 	named := newSession("julia", "s", nil, nil)
 	py := newSession("python", "s", nil, nil)
 	py.dead.Store(true)
-	state.manager.sessions[sessionKey{lang: "julia", route: "/work", disc: "/env"}] = jl
+	state.manager.sessions[sessionKey{lang: "julia", cwd: "/work", exe: "julia"}] = jl
 	state.manager.sessions[sessionKey{label: "scratch"}] = named
-	state.manager.sessions[sessionKey{lang: "python", route: "/work"}] = py
+	state.manager.sessions[sessionKey{lang: "python", cwd: "/work", exe: "python3"}] = py
 
 	resp := handleRequest(state, protocolRequest{Action: "sessions"})
 	require.Empty(t, resp.Error)
 	require.Equal(t, `- {id: kqzmkqzm, lang: julia, dir: /work, args: [--project=/env]}
-- {lang: julia, session: scratch, args: [--project=@.]}
+- {lang: julia, session: scratch}
 - {lang: python, dir: /work, status: dead}
 `, resp.Output)
 }
@@ -119,7 +119,7 @@ func TestHandleRequest_SessionsParseableYAML(t *testing.T) {
 	jl := newSession("julia", "s", []string{"--project=/env"}, nil)
 	jl.id = "kqzmkqzm"
 	named := newSession("julia", "s", nil, nil)
-	state.manager.sessions[sessionKey{lang: "julia", route: "/work", disc: "/env"}] = jl
+	state.manager.sessions[sessionKey{lang: "julia", cwd: "/work", exe: "julia"}] = jl
 	state.manager.sessions[sessionKey{label: "scratch"}] = named
 
 	resp := handleRequest(state, protocolRequest{Action: "sessions"})
@@ -161,7 +161,7 @@ func TestCloseSessionByID(t *testing.T) {
 	state := newTestState()
 	sess := newSession("julia", "s", nil, nil)
 	sess.id = "kqzm"
-	state.manager.sessions[sessionKey{lang: "julia", route: "/work", disc: "@."}] = sess
+	state.manager.sessions[sessionKey{lang: "julia", cwd: "/work", exe: "julia"}] = sess
 
 	// Unique prefix resolves regardless of cwd.
 	resp := handleRequest(state, protocolRequest{Action: "close", ID: "kq", Cwd: t.TempDir()})
@@ -180,13 +180,13 @@ func TestKeyForIDPrefix(t *testing.T) {
 	a.id = "kqzm"
 	b := newSession("julia", "s", nil, nil)
 	b.id = "kxyz"
-	m.sessions[sessionKey{lang: "julia", route: "/a", disc: "@."}] = a
-	m.sessions[sessionKey{lang: "julia", route: "/b", disc: "@."}] = b
+	m.sessions[sessionKey{lang: "julia", cwd: "/a", exe: "julia"}] = a
+	m.sessions[sessionKey{lang: "julia", cwd: "/b", exe: "julia"}] = b
 
 	key, ok, err := m.keyForID("kq")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, sessionKey{lang: "julia", route: "/a", disc: "@."}, key)
+	require.Equal(t, sessionKey{lang: "julia", cwd: "/a", exe: "julia"}, key)
 
 	_, _, err = m.keyForID("k") // shared prefix → ambiguous
 	require.Error(t, err)
@@ -201,16 +201,13 @@ func TestSessionManagerKey(t *testing.T) {
 	m := newSessionManager()
 	defer m.shutdown()
 
-	// key = lang + cwd + discriminant (project); label keys are global.
-	require.Equal(t, sessionKey{lang: "julia", route: "/w", disc: "@."}, m.key("julia", "", "/w", "@."))
-	require.Equal(t, sessionKey{lang: "python", route: "/w"}, m.key("python", "", "/w", ""))
-	// same dir, distinct by language or by project → distinct sessions.
-	require.NotEqual(t, m.key("julia", "", "/w", "@."), m.key("python", "", "/w", ""))
-	require.NotEqual(t, m.key("julia", "", "/w", "@."), m.key("julia", "", "/w", "/env"))
-	absProject := filepath.Join(t.TempDir(), "env")
-	require.Equal(t, m.key("julia", "", "/a", absProject), m.key("julia", "", "/b", absProject))
-	require.NotEqual(t, m.key("julia", "", "/a", "@."), m.key("julia", "", "/b", "@."))
-	// a --session label is global: same key regardless of language/project.
-	require.Equal(t, sessionKey{label: "scratch"}, m.key("julia", "scratch", "/w", "@."))
+	// key = language + cwd + interpreter; labels are global.
+	require.Equal(t, sessionKey{lang: "julia", cwd: "/w", exe: "julia"}, m.key("julia", "", "/w", ""))
+	require.Equal(t, sessionKey{lang: "python", cwd: "/w", exe: python.Adapter{}.DefaultExe()}, m.key("python", "", "/w", ""))
+	require.NotEqual(t, m.key("julia", "", "/w", "julia"), m.key("python", "", "/w", "python3"))
+	require.NotEqual(t, m.key("julia", "", "/w", "julia"), m.key("julia", "", "/w", "/opt/julia"))
+	require.NotEqual(t, m.key("julia", "", "/a", "julia"), m.key("julia", "", "/b", "julia"))
+	// a --session label is global: same key regardless of language/interpreter.
+	require.Equal(t, sessionKey{label: "scratch"}, m.key("julia", "scratch", "/w", "julia"))
 	require.Equal(t, sessionKey{label: "scratch"}, m.key("python", "scratch", "/other", ""))
 }

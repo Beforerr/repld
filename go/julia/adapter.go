@@ -35,14 +35,6 @@ func hasProject(args []string) bool {
 	return projectOf(args) != ""
 }
 
-// each project is its own session.
-func (Adapter) SessionKey(_ string, forwarded []string) string {
-	if p := projectOf(forwarded); p != "" {
-		return p
-	}
-	return "@."
-}
-
 func projectOf(args []string) string {
 	for i, a := range args {
 		if v, ok := strings.CutPrefix(a, "--project="); ok {

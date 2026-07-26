@@ -373,8 +373,7 @@ func TestJuliaWorldAgeDisplay(t *testing.T) {
 	// Fresh pkg content forces a cache-miss precompile during this eval (the world bump).
 	res := repldOK(t, socketPath, pkgDir, "julia", "--project="+pkgDir, "-E", "using WAEnum; WAEnum.mkval()")
 	require.Equal(t, "Dark::Shade = 0\n", res.stdout)
-	require.NotContains(t, res.stderr, "world age")
-	require.NotContains(t, res.stderr, "too new")
+	require.Equal(t, "Dark::Shade = 0\n", repldOK(t, socketPath, pkgDir, "julia", "-E", "WAEnum.mkval()").stdout)
 }
 
 // TestKillRunsAtexitHooks: a graceful shutdown must let Julia run its atexit

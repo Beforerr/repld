@@ -31,7 +31,7 @@ repld python3 train.py 50  # 50 → sys.argv[1]
 - Import packages once per session; later calls should use already-loaded names.
 - Avoid repeating fixture/setup code in every command.
 - Repld flags (`--session`, `--fresh`, `--lang`) go before the interpreter. Interpreter flags go after it.
-- Session routing: `--session LABEL` has highest priority. Otherwise sessions are keyed by language plus adapter-specific environment (for example project flag for Julia, interpreter path for Python/R/Wolfram) plus cwd.
+- Session routing: `--session LABEL` has highest priority. Otherwise sessions are keyed by language, interpreter, and cwd. Interpreter flags configure only a new session.
 - Avoid using `--fresh` when interpreters can safely pick up changed state.
 
 See [julia.md](references/julia.md), [python.md](references/python.md), [r.md](references/r.md), [wolfram.md](references/wolfram.md) for language-specific notes.

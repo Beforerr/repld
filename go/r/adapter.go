@@ -19,13 +19,6 @@ func (Adapter) LaunchArgs(forwarded []string) []string {
 	return append([]string{"--slave", "--no-save", "--no-restore"}, forwarded...)
 }
 
-func (a Adapter) SessionKey(exe string, _ []string) string {
-	if exe == "" {
-		return a.DefaultExe()
-	}
-	return exe
-}
-
 func (Adapter) BootstrapStmt() string {
 	source := strings.ReplaceAll(strings.ReplaceAll(runtimeSource, "\r\n", "\n"), "\r", "\n")
 	return fmt.Sprintf(`eval(parse(text = %s), envir = .GlobalEnv)`, strconv.Quote(source))

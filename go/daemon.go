@@ -31,7 +31,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 
 	switch req.Action {
 	case "trace":
-		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, req.Exe)
 		if kerr != nil {
 			return errResp(kerr.Error())
 		}
@@ -53,7 +53,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		return response{Output: out}
 
 	case "interrupt":
-		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, req.Exe)
 		if kerr != nil {
 			return errResp(kerr.Error())
 		}
@@ -64,7 +64,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		return response{Output: msg}
 
 	case "close":
-		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, req.Exe)
 		if kerr != nil {
 			return errResp(kerr.Error())
 		}
@@ -75,7 +75,7 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 		return response{Output: msg}
 
 	case "free":
-		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, discFor(req))
+		key, kerr := state.manager.targetKey(req.ID, req.Lang, req.Session, req.Cwd, req.Exe)
 		if kerr != nil {
 			return errResp(kerr.Error())
 		}
@@ -117,15 +117,6 @@ func formatSessions(items []sessionInfo) (string, error) {
 
 func errResp(msg string) response {
 	return response{Error: msg}
-}
-
-// discFor is the session's environment discriminant, or "" when the language is
-// unknown (label-only reuse, where the discriminant isn't part of the key).
-func discFor(req protocolRequest) string {
-	if a := adapterFor(req.Lang); a != nil {
-		return a.SessionKey(req.Exe, req.Args)
-	}
-	return ""
 }
 
 func normalizedTraceLevel(level string) string {
@@ -199,15 +190,14 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	enc := json.NewEncoder(conn)
 	emit := func(f streamFrame) { _ = enc.Encode(f) }
 
-	disc := discFor(req)
 	if req.RequireExisting {
-		if req.Fresh || !state.manager.hasLiveSession(req.Lang, req.Session, req.Cwd, disc) {
+		if req.Fresh || !state.manager.hasLiveSession(req.Lang, req.Session, req.Cwd, req.Exe) {
 			emit(streamFrame{Done: true, Error: "no existing session for label; pass an interpreter or --lang to create one"})
 			return
 		}
 	}
 	if req.Fresh {
-		state.manager.restart(req.Lang, req.Session, req.Cwd, disc)
+		state.manager.restart(req.Lang, req.Session, req.Cwd, req.Exe)
 	}
 	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args, req.OwnerPID, req.OwnerStart)
 	if err != nil {
@@ -251,10 +241,10 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	err = sess.execute(ctx, code, printResult, onChunk)
 	if err != nil {
 		if !sess.isAlive() {
-			state.manager.remove(req.Lang, req.Session, req.Cwd, disc)
+			state.manager.remove(req.Lang, req.Session, req.Cwd, req.Exe)
 		}
 		if evalErr, ok := err.(*evalError); ok {
-			state.manager.recordError(req.Lang, req.Session, req.Cwd, disc, evalErr)
+			state.manager.recordError(req.Lang, req.Session, req.Cwd, req.Exe, evalErr)
 			emit(streamFrame{Done: true, Error: formatError(evalErr, req.TraceLevel, sess.id)})
 			return
 		}
