@@ -146,7 +146,7 @@ func (m *SessionManager) openLogFile(key sessionKey) *os.File {
 
 // forwarded args apply only when a session is first created;
 // a live session for the key is reused as-is.
-func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []string) (*Session, error) {
+func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []string, ownerPID int, ownerStart int64) (*Session, error) {
 	lc, known := langs[lang]
 	disc := ""
 	if known {
@@ -185,6 +185,7 @@ func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []strin
 
 		m.mu.Lock()
 		sess.id = m.uniqueIDLocked()
+		sess.ownerPID, sess.ownerStart = ownerPID, ownerStart
 		m.sessions[key] = sess
 		m.mu.Unlock()
 		return sess, nil
@@ -227,6 +228,46 @@ func (m *SessionManager) close(key sessionKey) (string, error) {
 	return fmt.Sprintf("Session %s closed.", key), nil
 }
 
+func (m *SessionManager) free(key sessionKey) (string, error) {
+	m.mu.Lock()
+	sess := m.sessions[key]
+	if sess != nil {
+		sess.ownerPID, sess.ownerStart = 0, 0
+	}
+	m.mu.Unlock()
+	if sess == nil {
+		return "", fmt.Errorf("no session for %s", key)
+	}
+	return fmt.Sprintf("Session %s freed; it will not auto-close.", key), nil
+}
+
+func (m *SessionManager) reapDeadOwners() {
+	m.mu.Lock()
+	var dead []sessionKey
+	for key, sess := range m.sessions {
+		if ownerDead(sess.ownerPID, sess.ownerStart) {
+			dead = append(dead, key)
+		}
+	}
+	m.mu.Unlock()
+	for _, key := range dead {
+		m.close(key)
+	}
+}
+
+func (m *SessionManager) reapLoop(stop <-chan struct{}) {
+	t := time.NewTicker(60 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			m.reapDeadOwners()
+		}
+	}
+}
+
 func (m *SessionManager) hasLiveSession(lang, session, cwd, disc string) bool {
 	key := m.key(lang, session, cwd, disc)
 	m.mu.Lock()
@@ -256,6 +297,7 @@ type sessionInfo struct {
 	Session string   `yaml:"session,omitempty"` // named-session label; "" for cwd-keyed sessions
 	Status  string   `yaml:"status,omitempty"`  // "dead" or "busy"; "" when idle and alive
 	Busy    float64  `yaml:"busy,omitempty"`    // seconds in-flight; set only while busy
+	Owner   int      `yaml:"owner,omitempty"`   // owner pid whose exit auto-closes the session; 0 = pinned
 	Args    []string `yaml:"args,omitempty"`    // effective launch args (Julia's implicit --project is made explicit)
 	Log     string   `yaml:"log,omitempty"`
 }
@@ -276,9 +318,10 @@ func (m *SessionManager) list() []sessionInfo {
 	result := make([]sessionInfo, 0, len(m.sessions))
 	for key, sess := range m.sessions {
 		info := sessionInfo{
-			ID:   sess.id,
-			Lang: sess.lang,
-			Args: sess.fwd,
+			ID:    sess.id,
+			Lang:  sess.lang,
+			Args:  sess.fwd,
+			Owner: sess.ownerPID,
 		}
 		if key.label != "" {
 			info.Session = key.label

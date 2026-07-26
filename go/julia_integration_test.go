@@ -393,7 +393,6 @@ func TestKillRunsAtexitHooks(t *testing.T) {
 	require.FileExists(t, marker, "graceful shutdown should run atexit hooks, not SIGKILL")
 }
 
-
 func TestJuliaFileEvalArgsAndState(t *testing.T) {
 	if _, err := exec.LookPath(julia.Adapter{}.DefaultExe()); err != nil {
 		t.Skipf("%s not installed", julia.Adapter{}.DefaultExe())

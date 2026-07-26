@@ -39,6 +39,9 @@ are keyed by `lang` + (`--session` label / project / cwd); the lang prefix keeps
 same-dir sessions of different languages distinct. Runs until `stop` (or an
 optional `daemon --idle-timeout SECS`; default 0 = never).
 
+**Owner lease**: the daemon closes a session after its owning process exits.
+Ownerless sessions persist until closed; `repld free` removes an existing lease.
+
 **Session** (`go/session.go`): wraps one interpreter subprocess. The adapter
 supplies the launch argv, the embedded runtime source + its load statement, the
 per-eval wrapper, and the sentinel statement. Code is hex-encoded and eval'd via
@@ -97,7 +100,8 @@ session is a no-op.
 - `go/adapter.go` — `Adapter` interface: the language-execution seam (launch argv, runtime, eval wrap, sentinel, `EvalFileStmt` for in-session file eval)
 - `go/daemon.go` — request dispatch, idle watchdog, client-disconnect→interrupt watcher
 - `go/session.go` — `Session`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt, graceful `kill`
-- `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs
+- `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs, owner-lease reaper
+- `go/owner.go` — owner-pid resolution (client) + liveness/pid-reuse check (daemon)
 - `go/julia/`, `go/python/`, `go/r/`, `go/wolfram/` — per-language `Adapter` + embedded runtime: dials the control socket, evals code and writes the control frame, handles errors
 
 ## Adding a language

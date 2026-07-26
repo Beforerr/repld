@@ -5,7 +5,8 @@
 Without specifying `--session`, distinct projects correspond to different sessions.
 
 ```bash
-repld julia --project=test -e 'using ImportPackageOnce'
+repld julia -e 'include("setup.jl")'
+repld julia -e 'using Pkg; Pkg.activate("test"); using ImportTestPackageOnce'
 repld julia --project=@temp -e 'using Pkg; Pkg.add("Example")'
 repld julia +1.11 -E 'VERSION' # default project env is "@."
 repld --fresh julia -t 4 -E 'Threads.nthreads()'

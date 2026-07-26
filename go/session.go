@@ -42,6 +42,9 @@ type Session struct {
 	logFile   *os.File
 	startup   []startupChunk
 
+	ownerPID   int
+	ownerStart int64
+
 	controlAcceptTimeout float64 // seconds to wait for the runtime's control dial-back
 }
 

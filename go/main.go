@@ -66,6 +66,8 @@ type protocolRequest struct {
 	RequireExisting bool     `json:"require_existing,omitempty"`
 	File            string   `json:"file,omitempty"`
 	FileArgs        []string `json:"file_args,omitempty"`
+	OwnerPID        int      `json:"owner_pid,omitempty"`   // session owner; its exit auto-closes the session
+	OwnerStart      int64    `json:"owner_start,omitempty"` // owner start time, guards against pid reuse
 }
 
 type streamFrame struct {
@@ -134,7 +136,7 @@ func mustGetwd() string {
 	return cwd
 }
 
-func cmdEval(socketPath, lang, code, exe, session string, printResult, fresh bool, traceLevel string, args []string) {
+func cmdEval(socketPath, lang, code, exe, session string, printResult, fresh bool, traceLevel string, args []string, ownerPID int, ownerStart int64) {
 	if code == "-" {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -155,13 +157,15 @@ func cmdEval(socketPath, lang, code, exe, session string, printResult, fresh boo
 		PrintResult:     printResult,
 		Fresh:           fresh,
 		RequireExisting: lang == "" && exe == "" && session != "",
+		OwnerPID:        ownerPID,
+		OwnerStart:      ownerStart,
 	}
 	run(socketPath, req, true)
 }
 
 // cmdEvalFile sends an in-session file eval: path abs-ified but not read here —
 // the interpreter reads it at eval time, so edits between calls take effect.
-func cmdEvalFile(socketPath, lang, file, exe, session string, fresh bool, traceLevel string, fileArgs, fwd []string) {
+func cmdEvalFile(socketPath, lang, file, exe, session string, fresh bool, traceLevel string, fileArgs, fwd []string, ownerPID int, ownerStart int64) {
 	abs, err := filepath.Abs(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -178,6 +182,8 @@ func cmdEvalFile(socketPath, lang, file, exe, session string, fresh bool, traceL
 		Fresh:      fresh,
 		File:       abs,
 		FileArgs:   fileArgs,
+		OwnerPID:   ownerPID,
+		OwnerStart: ownerStart,
 	}, true)
 }
 
@@ -196,6 +202,18 @@ func cmdInterrupt(socketPath string, tg subTarget, exe string) {
 func cmdClose(socketPath string, tg subTarget, exe string) {
 	run(socketPath, protocolRequest{
 		Action:  "close",
+		ID:      tg.id,
+		Lang:    tg.lang,
+		Exe:     exe,
+		Cwd:     mustGetwd(),
+		Session: tg.session,
+		Args:    tg.fwd,
+	}, false)
+}
+
+func cmdFree(socketPath string, tg subTarget, exe string) {
+	run(socketPath, protocolRequest{
+		Action:  "free",
 		ID:      tg.id,
 		Lang:    tg.lang,
 		Exe:     exe,
@@ -236,6 +254,7 @@ repld flags:
   --session LABEL      Named session, reusable without re-specifying the exe
   --fresh              Clear the targeted session before evaluating
   --trace LEVEL        Error traceback level: short, smart, or full (eval default: smart)
+  --owner-pid N        Auto-close the session when process N exits (0 = never; opt out)
 
 Commands (trace/interrupt/close locate a session by [exe], --session, or the
 short id shown by 'sessions'; an id prefix works when unambiguous):
@@ -243,6 +262,7 @@ short id shown by 'sessions'; an id prefix works when unambiguous):
   trace                Print the last saved error traceback for the session
   interrupt            Interrupt the in-flight eval (SIGKILL after 3s if unresponsive)
   close                Kill the session's interpreter and discard its state
+  free                 Clear the session's owner so it is never auto-closed
   stop                 Stop the daemon
   daemon               Run the daemon in the foreground (normally auto-started)
     --idle-timeout SECS  Shut down after idle (default: 0 = never; use 'stop')
@@ -251,7 +271,7 @@ short id shown by 'sessions'; an id prefix works when unambiguous):
 }
 
 var subcommands = map[string]bool{
-	"sessions": true, "trace": true, "interrupt": true, "close": true, "stop": true, "daemon": true,
+	"sessions": true, "trace": true, "interrupt": true, "close": true, "free": true, "stop": true, "daemon": true,
 }
 
 type parsed struct {
@@ -260,6 +280,7 @@ type parsed struct {
 	lang     string
 	session  string
 	trace    string
+	ownerPID string
 	fresh    bool
 	evalMode string
 	code     string
@@ -290,6 +311,7 @@ func parseArgs(args []string) parsed {
 	p := parsed{socket: defaultSocket}
 	repld := map[string]*string{
 		"socket": &p.socket, "lang": &p.lang, "session": &p.session, "trace": &p.trace,
+		"owner-pid": &p.ownerPID,
 	}
 	evalModeFor := func(name string) string {
 		evalNames, printNames := evalPrintFlags(resolveLang(p))
@@ -461,20 +483,21 @@ func main() {
 		usage(0)
 	}
 	exe := resolveExeStr(p.exe, lang)
+	ownerPID, ownerStart := resolveOwner(p.ownerPID)
 
 	switch {
 	case p.evalMode != "":
-		cmdEval(p.socket, lang, p.code, exe, p.session, p.evalMode == "print", p.fresh, p.trace, p.fwd)
+		cmdEval(p.socket, lang, p.code, exe, p.session, p.evalMode == "print", p.fresh, p.trace, p.fwd, ownerPID, ownerStart)
 	case p.file != "":
-		cmdEvalFile(p.socket, lang, p.file, exe, p.session, p.fresh, p.trace, p.fileArgs, p.fwd)
+		cmdEvalFile(p.socket, lang, p.file, exe, p.session, p.fresh, p.trace, p.fileArgs, p.fwd, ownerPID, ownerStart)
 	case len(p.fwd) > 0:
-		cmdEval(p.socket, lang, "", exe, p.session, false, p.fresh, p.trace, p.fwd)
+		cmdEval(p.socket, lang, "", exe, p.session, false, p.fresh, p.trace, p.fwd, ownerPID, ownerStart)
 	default:
 		fi, err := os.Stdin.Stat()
 		if err != nil || fi.Mode()&os.ModeCharDevice != 0 {
 			usage(2)
 		}
-		cmdEval(p.socket, lang, "-", exe, p.session, false, p.fresh, p.trace, p.fwd)
+		cmdEval(p.socket, lang, "-", exe, p.session, false, p.fresh, p.trace, p.fwd, ownerPID, ownerStart)
 	}
 }
 
@@ -497,6 +520,9 @@ func dispatchSubcommand(p parsed) {
 	case "close":
 		tg := parseTarget(p)
 		cmdClose(p.socket, tg, resolveExeStr(tg.exe, tg.lang))
+	case "free":
+		tg := parseTarget(p)
+		cmdFree(p.socket, tg, resolveExeStr(tg.exe, tg.lang))
 	case "daemon":
 		fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 		idleTimeout := fs.Float64("idle-timeout", 0, "Shut down after this many idle seconds (0 = never)")
