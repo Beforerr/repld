@@ -39,3 +39,30 @@ func TestOwnerLease(t *testing.T) {
 	require.NotContains(t, m.sessions, owned)
 	require.Contains(t, m.sessions, freed)
 }
+
+func TestIdentifiesHarness(t *testing.T) {
+	for _, tc := range []struct {
+		ident string
+		want  bool
+	}{
+		{"claude\x00/usr/local/bin/claude\x00", true},
+		{"codex\x00/opt/homebrew/bin/codex\x00--yolo\x00", true},
+		{"zsh\x00/bin/zsh\x00-c\x00repld julia -e 1\x00", false},
+		{"node\x00/usr/bin/node\x00/Users/me/.claude/cli.js\x00", false},
+		{"codex-wrapper\x00/usr/local/bin/codex-wrapper\x00", false},
+	} {
+		t.Run(tc.ident, func(t *testing.T) {
+			require.Equal(t, tc.want, identifiesHarness(tc.ident))
+		})
+	}
+}
+
+func TestHarnessPID(t *testing.T) {
+	parents := map[int]int{40: 30, 30: 20, 20: 1}
+	idents := map[int]string{40: "zsh", 30: "codex", 20: "login"}
+	parent := func(pid int) (int, bool) {
+		ppid, ok := parents[pid]
+		return ppid, ok
+	}
+	require.Equal(t, 30, harnessPID(40, parent, func(pid int) string { return idents[pid] }))
+}

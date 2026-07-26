@@ -25,11 +25,10 @@ func resolveOwner(explicit string) (int, int64) {
 	if env := os.Getenv("REPLD_OWNER_PID"); env != "" {
 		return ownerFrom(env)
 	}
-	if os.Getenv("CLAUDECODE") != "" {
+	if os.Getenv("CLAUDECODE") != "" || os.Getenv("CODEX_THREAD_ID") != "" {
 		// The immediate parent is the per-call shell; the harness sits some
-		// variable number of levels up (Claude Code wraps Bash as a compound
-		// `zsh -c`, and users add timeout/env/xargs wrappers), so walk the
-		// ancestry rather than assuming a fixed depth.
+		// variable number of levels up, so walk the ancestry rather than
+		// assuming a fixed depth.
 		if h := harnessPID(os.Getppid(), ppidOf, procIdent); h > 0 {
 			st, _ := procInfo(h)
 			return h, st
@@ -55,11 +54,12 @@ func harnessPID(start int, parent func(int) (int, bool), ident func(int) string)
 	return 0
 }
 
-// Shell argv may mention ~/.claude; match executable basenames only.
+// Shell argv may mention agent config paths; match executable basenames only.
 func identifiesHarness(ident string) bool {
 	sep := func(r rune) bool { return r == 0 || r == ' ' || r == '\t' || r == '\n' || r == '\r' }
 	for _, tok := range strings.FieldsFunc(ident, sep) {
-		if filepath.Base(tok) == "claude" {
+		switch filepath.Base(tok) {
+		case "claude", "codex":
 			return true
 		}
 	}
