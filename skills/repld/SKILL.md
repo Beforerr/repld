@@ -40,8 +40,9 @@ See [julia.md](references/julia.md), [python.md](references/python.md), [r.md](r
 
 ```bash
 repld sessions                              # list active sessions, show IDs
-repld trace [id | exe | --session=LABEL]    # last saved traceback
-repld [interrupt | close]  [id | exe | --session=LABEL]
+repld trace <id | --session=LABEL>          # last saved traceback
+repld interrupt <id | --session=LABEL>
+repld close <id | --session=LABEL>
 repld stop                                  # shut down daemon
 
 timeout 30 repld julia -e 'might_hang()'    # client death interrupts eval
