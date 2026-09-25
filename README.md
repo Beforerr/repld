@@ -73,7 +73,8 @@ One Go binary is both the CLI client and the background daemon (auto-started on 
   - This tool is the minimal slice: one dependency-free binary, a plain text protocol — trading rich MIME output for simplicity and zero setup.
 - Model Context Protocol (MCP) Server is less composable than shell tools and infeasible to use from outside AI sessions.
   - [mcp-repl](https://github.com/posit-dev/mcp-repl) for persistent Python/R with sandboxing, inline plot images, curated oversized output.
-  - [julia-mcp](https://github.com/aplavin/julia-mcp?tab=readme-ov-file) for Julia
+  - [julia-mcp](https://github.com/aplavin/julia-mcp), [AgentREPL.jl](https://github.com/samtalki/AgentREPL.jl) (Malt.jl workers), [Kaimon.jl](https://github.com/kahliburke/Kaimon.jl) (attaches to running Julia processes, debugging/introspection tools), [MCPRepl.jl](https://discourse.julialang.org/t/ann-mcprepl-jl-share-your-repl-with-your-ai-agent/130536) (shares your own REPL) for Julia
 - Julia
+  - [DaemonMode.jl](https://github.com/dmolina/DaemonMode.jl) is the closest, but the client is itself a `julia` process and the server is started manually per port. [pi-julia](https://pi.dev/packages/pi-julia) wraps it for the pi agent.
   - [DaemonicCabal.jl](https://github.com/tecosaur/DaemonicCabal.jl) only runs on Linux
   - [Malt.jl](https://github.com/JuliaPluto/Malt.jl) manages isolated Julia worker processes _from within Julia_ (used by Pluto). Both run code in persistent, crash-isolated subprocesses, but Malt is a Julia library: its driver must be Julia, and it returns native typed values over Julia's serialization. This tool targets non-Julia callers — a single dependency-free binary speaking a text protocol, so any language/shell/agent can drive it and interpreter versions can be mixed freely.
