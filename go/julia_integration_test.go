@@ -50,6 +50,7 @@ type streamChunk struct {
 }
 
 func TestJuliaWarmSession(t *testing.T) {
+	t.Parallel()
 	socketPath := sharedDaemon(t)
 	cwd := sharedJuliaCwd(t)
 
@@ -321,6 +322,7 @@ func TestClientDisconnectInterruptsEval(t *testing.T) {
 }
 
 func TestRevisePicksUpPackageChanges(t *testing.T) {
+	t.Parallel()
 	socketPath := sharedDaemon(t)
 
 	pkgDir := sessionCwd(t)
@@ -360,6 +362,7 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 // frame; showing a result whose method was just defined (an @enum's namemap) must not
 // throw "method too new". Guards the Base.invokelatest wrap in runtime.jl.
 func TestJuliaWorldAgeDisplay(t *testing.T) {
+	t.Parallel()
 	socketPath := sharedDaemon(t)
 
 	pkgDir := sessionCwd(t)
@@ -380,6 +383,7 @@ func TestJuliaWorldAgeDisplay(t *testing.T) {
 // hooks (flush buffers, finalizers) rather than SIGKILL the process. The hook
 // writes a marker file; its presence proves the process exited cleanly.
 func TestKillRunsAtexitHooks(t *testing.T) {
+	t.Parallel()
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 	sess := newSession("julia", newSentinel(), nil, nil)
