@@ -12,17 +12,29 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      actions: write # julia-actions/cache deletes superseded caches
+      contents: read
+    env:
+      JULIA_CPU_TARGET: ${{ matrix.os == 'macos-latest' && 'native' || 'x86-64-v3' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: '>=1.25'
           cache-dependency-path: go.sum
       - uses: julia-actions/setup-julia@v2
       - uses: julia-actions/cache@v3
-      - uses: r-lib/actions/setup-r@v2
-        if: runner.os != 'Windows'
-      # windows-latest ships R; setup-r would reinstall it plus Ghostscript (~30s).
+      # Not setup-r: it adds R CMD check extras (Linux sysreqs, macOS Fortran, Windows Ghostscript)
+      - if: runner.os == 'Linux'
+        run: |
+          install() { sudo apt-get install -y -qq --no-install-recommends r-base-core; }
+          install || { sudo apt-get update -qq && install; }
+      - if: runner.os == 'macOS'
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/R.pkg" "$(curl -fsSL "https://api.r-hub.io/rversions/resolve/release/macos/$(uname -m)" | jq -r .url)"
+          sudo installer -pkg "$RUNNER_TEMP/R.pkg" -target /
+      # windows-latest ships R.
       - if: runner.os == 'Windows'
         shell: bash
         run: cygpath -w "$(ls -d /c/Program\ Files/R/R-*/bin | tail -1)" >> "$GITHUB_PATH"
