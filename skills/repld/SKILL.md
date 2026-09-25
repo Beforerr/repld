@@ -1,6 +1,6 @@
 ---
 name: repld
-description: "Evaluate Julia/Python/R/Wolfram in long-lived background sessions so imports, variables, and project state persist across calls. Use for iterative work — package development, REPL-style experiments, tests, benchmarks — where starting fresh wastes tokens and time. Use prudently for reproducible research."
+description: "Evaluate Julia/Python/R/Wolfram in long-lived background sessions so imports, variables, and project state persist across calls. Use for iterative work — package development, REPL-style experiments, tests, benchmarks — where starting fresh wastes tokens and time. Prefer file-based execution for reproducible research."
 ---
 
 ## Preferred workflow
@@ -24,7 +24,8 @@ repld --session scratch julia -E 'x = 1'  # named session across directories
 cd /tmp && repld --session scratch julia -E 'x'  # reuse existing named session
 
 # File mode: write/update scripts, then eval them in the warm session
-repld julia analysis.jl
+repld julia analysis.jl  # fresh module per run: packages persist, globals don't
+repld julia -e 'include("analysis.jl")'  # keep globals in Main
 repld python3 train.py 50  # 50 → sys.argv[1]
 ```
 

@@ -250,7 +250,7 @@ function run(hex_code, print_result)
         flush(stdout)
         _write_control("OK")
     else
-        short, smart, full = _render_error(err, bt)
+        short, smart, full = Base.invokelatest(_render_error, err, bt)
         flush(stdout)
         _write_control(string("ERR ", _hex(short), " ", _hex(smart), " ", _hex(full)))
     end

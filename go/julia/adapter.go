@@ -61,11 +61,13 @@ func (Adapter) EvalFileStmt(path string, args []string) string {
 	for i, a := range args {
 		argElems[i] = fmt.Sprintf(`String(hex2bytes("%s"))`, hex.EncodeToString([]byte(a)))
 	}
+	// Fresh module per run: scripts only share loaded packages and compiled code,
+	// evaluated inside a throwaway parent so no binding accumulates in Main.
 	return fmt.Sprintf(`let _p = String(hex2bytes("%s")), _old = copy(ARGS), _oldpf = Base.PROGRAM_FILE
     empty!(ARGS); append!(ARGS, AbstractString[%s])
     Base.PROGRAM_FILE = _p
     try
-        Base.include(Main, _p)
+        Base.include(Core.eval(Module(), Expr(:module, true, :Script, Expr(:block))), _p)
     finally
         empty!(ARGS); append!(ARGS, _old)
         Base.PROGRAM_FILE = _oldpf

@@ -401,18 +401,19 @@ func TestJuliaFileEvalArgsAndState(t *testing.T) {
 	cwd := sharedJuliaCwd(t)
 	script := filepath.Join(t.TempDir(), "script.jl")
 	write := func(body string) { require.NoError(t, os.WriteFile(script, []byte(body), 0644)) }
-	write("println(join(ARGS, \",\"))\nfile_marker = 11\n")
+	helper := filepath.Join(filepath.Dir(script), "helper.jl")
+	require.NoError(t, os.WriteFile(helper, []byte("helper_marker = 7\n"), 0644))
+	write("println(join(ARGS, \",\"))\nstruct FileS; a::Int; end\nfile_marker = 11\ninclude(\"helper.jl\")\nprintln(helper_marker)\n")
 
 	res := repldOK(t, socketPath, cwd, "julia", script, "a", "b")
-	require.Equal(t, "a,b\n", res.stdout)
-	check := repldOK(t, socketPath, cwd, "julia", "-e", "println(file_marker)")
-	require.Equal(t, "11\n", check.stdout)
-	check = repldOK(t, socketPath, cwd, "julia", "-e", "println(length(ARGS))")
-	require.Equal(t, "0\n", check.stdout)
+	require.Equal(t, "a,b\n7\n", res.stdout)
+	check := repldOK(t, socketPath, cwd, "julia", "-e", "println(isdefined(Main, :file_marker), length(ARGS))")
+	require.Equal(t, "false0\n", check.stdout)
 
-	write("println(\"edited\")\n")
+	// Globals from a previous run are gone; a changed struct redefines cleanly.
+	write("println(isdefined(@__MODULE__, :file_marker))\nstruct FileS; a::Float64; end\n")
 	res = repldOK(t, socketPath, cwd, "julia", script)
-	require.Equal(t, "edited\n", res.stdout)
+	require.Equal(t, "false\n", res.stdout)
 }
 
 // A request queued behind another eval must not interrupt running eval when client disconnects.
