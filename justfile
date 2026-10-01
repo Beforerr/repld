@@ -1,7 +1,6 @@
 install:
     -repld stop
     go build -C go -o ~/.local/bin/repld .
-    npx skills add . -g -y
 
 test:
     go test -C go -v -timeout 300s

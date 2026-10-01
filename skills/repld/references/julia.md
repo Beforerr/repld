@@ -14,10 +14,7 @@ repld --fresh julia -t 4 -E 'Threads.nthreads()'
 
 When `Revise` is available, repld loads it and calls `Revise.revise()` before each eval. Tracking depends on load path: dev'd packages pick up method and `const`/global changes. `includet`'d files only patch method unless files/modules set `__revise_mode__ = :eval`.
 
-Untrackable changes include:
-
-- Struct/type redefinition.
-- `using NewPkg` inside modules whose `Project.toml` did not list `NewPkg` when session was created.
+New dep in a dev'd package: `Pkg.resolve()`, then re-save the file (Revise won't retry a failed revision).
 
 ## Traceback levels (`--trace`)
 
