@@ -16,6 +16,7 @@ type SessionManager struct {
 	mu         sync.Mutex
 	sessions   map[sessionKey]*Session
 	lastErrors map[sessionKey]*evalError
+	errTimes   map[sessionKey]time.Time
 	sf         singleflight.Group
 	logDir     string
 }
@@ -54,6 +55,7 @@ func newSessionManager() *SessionManager {
 	return &SessionManager{
 		sessions:   make(map[sessionKey]*Session),
 		lastErrors: make(map[sessionKey]*evalError),
+		errTimes:   make(map[sessionKey]time.Time),
 		logDir:     logDir,
 	}
 }
@@ -195,6 +197,7 @@ func (m *SessionManager) restart(lang, session, cwd, exe string) {
 	sess := m.sessions[key]
 	delete(m.sessions, key)
 	delete(m.lastErrors, key)
+	delete(m.errTimes, key)
 	m.mu.Unlock()
 	if sess != nil {
 		sess.kill()
@@ -206,6 +209,7 @@ func (m *SessionManager) close(key sessionKey) (string, error) {
 	sess := m.sessions[key]
 	delete(m.sessions, key)
 	delete(m.lastErrors, key)
+	delete(m.errTimes, key)
 	m.mu.Unlock()
 	if sess == nil {
 		return "", fmt.Errorf("no session for %s", key)
@@ -266,6 +270,7 @@ func (m *SessionManager) recordError(lang, session, cwd, exe string, err *evalEr
 	key := m.key(lang, session, cwd, exe)
 	m.mu.Lock()
 	m.lastErrors[key] = err
+	m.errTimes[key] = time.Now()
 	m.mu.Unlock()
 }
 
@@ -355,4 +360,24 @@ func (m *SessionManager) shutdown() {
 		s.kill()
 	}
 	os.RemoveAll(m.logDir)
+}
+
+// latestError is the trace fallback when the exact key has none (typically
+// `repld trace` from a different cwd than the eval): the newest saved error,
+// restricted to lang when known.
+func (m *SessionManager) latestError(lang string) (sessionKey, *evalError) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var bestKey sessionKey
+	var best *evalError
+	var bestAt time.Time
+	for key, e := range m.lastErrors {
+		if lang != "" && key.lang != lang {
+			continue
+		}
+		if at := m.errTimes[key]; best == nil || at.After(bestAt) {
+			bestKey, best, bestAt = key, e, at
+		}
+	}
+	return bestKey, best
 }

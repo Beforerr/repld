@@ -36,10 +36,17 @@ func handleRequest(state *daemonState, req protocolRequest) response {
 			return errResp(kerr.Error())
 		}
 		err := state.manager.lastError(key)
+		note := ""
+		if err == nil && req.ID == "" && req.Session == "" {
+			var from sessionKey
+			if from, err = state.manager.latestError(req.Lang); err != nil {
+				note = fmt.Sprintf("(latest error, from %s)\n", from)
+			}
+		}
 		if err == nil {
 			return errResp("No saved traceback for this session.")
 		}
-		return response{Output: formatTraceOutput(err, req.TraceLevel)}
+		return response{Output: note + formatTraceOutput(err, req.TraceLevel)}
 
 	case "sessions":
 		items := state.manager.list()
@@ -243,12 +250,19 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		if !sess.isAlive() {
 			state.manager.remove(req.Lang, req.Session, req.Cwd, req.Exe)
 		}
-		if evalErr, ok := err.(*evalError); ok {
-			state.manager.recordError(req.Lang, req.Session, req.Cwd, req.Exe, evalErr)
-			emit(streamFrame{Done: true, Error: formatError(evalErr, req.TraceLevel, sess.id)})
-			return
+		evalErr, ok := err.(*evalError)
+		if !ok {
+			// Session death, timeouts, etc. carry no traceback, but `repld trace`
+			// should still show what was reported rather than a stale or empty slot.
+			msg := err.Error()
+			evalErr = &evalError{short: msg, smart: msg, full: msg}
 		}
-		emit(streamFrame{Done: true, Error: err.Error()})
+		state.manager.recordError(req.Lang, req.Session, req.Cwd, req.Exe, evalErr)
+		if ok {
+			emit(streamFrame{Done: true, Error: formatError(evalErr, req.TraceLevel, sess.id)})
+		} else {
+			emit(streamFrame{Done: true, Error: err.Error()})
+		}
 		return
 	}
 	emit(streamFrame{Done: true})
