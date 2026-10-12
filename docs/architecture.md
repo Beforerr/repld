@@ -22,6 +22,12 @@ abs-ified as `protocolRequest.File`/`FileArgs`, never read client-side and
 never a launch arg: the daemon wraps it via `Adapter.EvalFileStmt` through the
 normal eval path, so it re-evals in the warm session on every call.
 
+**Stale sessions.** A file run promises what a freshly launched interpreter would
+print. When an existing session can't deliver that — explicit startup args differ
+from the ones it was launched with, or the adapter's runtime reports reasons via the
+optional `staleChecker` (`go/adapter.go`) — the daemon restarts it first and names
+the reasons on stderr. An eval (`-e`/`-c`) keeps the session's state and only warns.
+
 The engine in `go/` is language-agnostic; per-language specifics live behind
 `Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, `go/r/`, and `go/wolfram/`. `langs`
 (`go/config.go`) maps a language name → adapter + eval/print flag spellings.
@@ -93,7 +99,7 @@ session is a no-op.
 
 - `go/main.go` — CLI arg scanner (`parseArgs`: own flags vs forwarded switches), client send/receive
 - `go/config.go` — `langs` registry (name→adapter, eval/print flag spellings), `langForExe`/`resolveLang`, single socket path
-- `go/adapter.go` — `Adapter` interface: the language-execution seam (launch argv, runtime, eval wrap, sentinel, `EvalFileStmt` for in-session file eval)
+- `go/adapter.go` — `Adapter` interface: the language-execution seam (launch argv, runtime, eval wrap, sentinel, `EvalFileStmt` for in-session file eval); optional `staleChecker`
 - `go/daemon.go` — request dispatch, idle watchdog, client-disconnect→interrupt watcher
 - `go/session.go` — `Session`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt, graceful `kill`
 - `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs, owner-lease reaper

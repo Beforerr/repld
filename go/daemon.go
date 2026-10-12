@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -203,22 +204,6 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 			return
 		}
 	}
-	if req.Fresh {
-		state.manager.restart(req.Lang, req.Session, req.Cwd, req.Exe)
-	}
-	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args, req.OwnerPID, req.OwnerStart)
-	if err != nil {
-		emit(streamFrame{Done: true, Error: err.Error()})
-		return
-	}
-	for _, chunk := range sess.drainStartup() {
-		if chunk.isStderr {
-			emit(streamFrame{Stderr: chunk.data})
-		} else {
-			emit(streamFrame{Chunk: chunk.data})
-		}
-	}
-
 	// Tie eval to connection: cancelling ctx on client disconnect lets execute interrupt it
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -231,6 +216,48 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 			}
 		}
 	}()
+
+	existed := !req.Fresh && state.manager.hasLiveSession(req.Lang, req.Session, req.Cwd, req.Exe)
+	if req.Fresh {
+		state.manager.restart(req.Lang, req.Session, req.Cwd, req.Exe)
+	}
+	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args, req.OwnerPID, req.OwnerStart)
+	if err != nil {
+		emit(streamFrame{Done: true, Error: err.Error()})
+		return
+	}
+	var reasons []string
+	if existed {
+		reasons = staleReasons(ctx, sess, req.Args)
+	}
+	if len(reasons) > 0 {
+		// A file run promises what a fresh interpreter would print, so it restarts;
+		// an eval keeps the session's state and only warns. Without an exe the
+		// session couldn't be relaunched as it was.
+		if req.File != "" && req.Exe != "" {
+			emit(streamFrame{Stderr: "repld: restarting session: " + strings.Join(reasons, "; ") + "\n"})
+			args := req.Args
+			if len(args) == 0 {
+				args = sess.fwd
+			}
+			state.manager.restart(req.Lang, req.Session, req.Cwd, req.Exe)
+			if sess, err = state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, args, req.OwnerPID, req.OwnerStart); err != nil {
+				emit(streamFrame{Done: true, Error: err.Error()})
+				return
+			}
+		} else {
+			for _, r := range reasons {
+				emit(streamFrame{Stderr: "repld: warning: " + r + "; `--fresh` restarts\n"})
+			}
+		}
+	}
+	for _, chunk := range sess.drainStartup() {
+		if chunk.isStderr {
+			emit(streamFrame{Stderr: chunk.data})
+		} else {
+			emit(streamFrame{Chunk: chunk.data})
+		}
+	}
 
 	onChunk := func(data string, isStderr bool) {
 		if isStderr {
@@ -361,4 +388,30 @@ func serveDaemon(socketPath string, idleTimeout time.Duration) error {
 	os.Remove(socketPath)
 	os.Remove(pidPath)
 	return nil
+}
+
+// staleReasons lists why an existing session would not behave like a freshly
+// launched one: explicit startup args it was not launched with, plus whatever the
+// adapter's runtime reports.
+func staleReasons(ctx context.Context, sess *Session, args []string) []string {
+	var reasons []string
+	if len(args) > 0 && !slices.Equal(args, sess.fwd) {
+		reasons = append(reasons, fmt.Sprintf("session was launched with %q, not %q", sess.fwd, args))
+	}
+	if c, ok := sess.adapter.(staleChecker); ok {
+		var out strings.Builder
+		collect := func(data string, isStderr bool) {
+			if !isStderr {
+				out.WriteString(data)
+			}
+		}
+		if sess.execute(ctx, c.StaleCheckStmt(), false, collect) == nil {
+			for line := range strings.Lines(out.String()) {
+				if line = strings.TrimSpace(line); line != "" {
+					reasons = append(reasons, line)
+				}
+			}
+		}
+	}
+	return reasons
 }

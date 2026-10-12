@@ -20,3 +20,10 @@ type Adapter interface {
 	// If false, the runtime is interrupted via process SIGINT.
 	InterruptViaControl() bool
 }
+
+// staleChecker is implemented by adapters whose runtime can tell when a live
+// session no longer matches its sources (e.g. edits a reloader failed to apply).
+type staleChecker interface {
+	// StaleCheckStmt prints one reason per line on stdout; none means current.
+	StaleCheckStmt() string
+}

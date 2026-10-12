@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- File runs restart a session that can't match a fresh interpreter (e.g. different startup flags, a failed Revise edit); evals warn instead.
 - Julia `--project` is now startup-only, like other interpreter flags; later calls reuse cwd session without repeating it.
 
 ## [1.0.0]

@@ -80,3 +80,5 @@ func (Adapter) SentinelStmt(sentinel string) string {
 }
 
 func (Adapter) InterruptViaControl() bool { return true }
+
+func (Adapter) StaleCheckStmt() string { return `Main.JuliaClientRuntime.stale_reasons()` }

@@ -349,13 +349,80 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	resp := send("println(TestRevPkg.greet())")
 	require.Equal(t, "hello\n", resp.stdout)
 
+	// The eval follows the write immediately, ahead of the FS event reaching Revise's watcher.
 	writePackage(`"goodbye"`)
-	// Revise sees the rewrite asynchronously (FSEvents/mtime latency), so the
-	// reload is eventually-consistent; each eval runs Revise.revise() first, so
-	// retry until the new definition lands.
-	require.Eventually(t, func() bool {
-		return send("println(TestRevPkg.greet())").stdout == "goodbye\n"
-	}, 15*time.Second, 250*time.Millisecond, "Revise did not pick up the package change")
+	require.Equal(t, "goodbye\n", send("println(TestRevPkg.greet())").stdout)
+
+	// Revise itself logs a failed revision only once.
+	writePackage(`(`)
+	for range 2 {
+		resp := send("println(TestRevPkg.greet())")
+		require.Equal(t, "goodbye\n", resp.stdout)
+		require.Contains(t, resp.stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+	}
+}
+
+// A file run must print what a fresh interpreter would, so a session that can't
+// restarts first; an eval keeps the session's state and only warns.
+func TestStaleSessionFileRestartsEvalWarns(t *testing.T) {
+	t.Parallel()
+	socketPath := sharedDaemon(t)
+
+	pkgDir := sessionCwd(t)
+	require.NoError(t, os.Mkdir(filepath.Join(pkgDir, "src"), 0755))
+	project := filepath.Join(pkgDir, "Project.toml")
+	projectToml, err := os.ReadFile(filepath.Join("testdata", "TestRevPkg", "Project.toml"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(project, projectToml, 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "src", "TestRevPkg.jl"), []byte("module TestRevPkg end\n"), 0644))
+	probe := filepath.Join(pkgDir, "probe.jl")
+	require.NoError(t, os.WriteFile(probe, []byte("using TestRevPkg\nprintln(isdefined(Main, :marker))\n"), 0644))
+
+	run := func(args ...string) cliResult {
+		t.Helper()
+		return repldOK(t, socketPath, pkgDir, append([]string{"julia"}, args...)...)
+	}
+	run("-e", "using TestRevPkg; marker = 1")
+	res := run(probe)
+	require.Equal(t, "true\n", res.stdout)
+	require.NotContains(t, res.stderr, "repld:")
+
+	// Revise applies most Project.toml edits; Base registers extensions only at package
+	// load, so only a Revise with `extensions_stale` can load added ones live.
+	writeProject := func(text string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(project, []byte(text), 0644))
+		later := time.Now().Add(time.Minute) // mtime resolution
+		require.NoError(t, os.Chtimes(project, later, later))
+	}
+	base := string(projectToml) + "\n[compat]\njulia = \"1\"\n"
+	writeProject(base)
+	require.NotContains(t, run(probe).stderr, "repld:")
+	reviseLoadsNew := run("-e", "print(isdefined(Revise, :extensions_stale))").stdout == "true"
+	writeProject(base + "\n[weakdeps]\nDates = \"ade2ca70-3891-5945-98fb-dc099432e06a\"\n\n[extensions]\nTestRevPkgDatesExt = \"Dates\"\n")
+	if reviseLoadsNew {
+		require.NoError(t, os.Mkdir(filepath.Join(pkgDir, "ext"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(pkgDir, "ext", "TestRevPkgDatesExt.jl"),
+			[]byte("module TestRevPkgDatesExt\nusing TestRevPkg, Dates\nend\n"), 0644))
+		res = run("-e", "using Dates; print(Base.get_extension(TestRevPkg, :TestRevPkgDatesExt) !== nothing)")
+		require.Equal(t, "true", res.stdout)
+		require.NotContains(t, res.stderr, "repld:")
+		writeProject(base) // removing an extension still can't be applied
+	}
+	stale := "[extensions] in " + project + " changed after its package loaded"
+	res = run("-e", "println(isdefined(Main, :marker))")
+	require.Equal(t, "true\n", res.stdout)
+	require.Contains(t, res.stderr, "repld: warning: "+stale)
+	res = run(probe)
+	require.Equal(t, "false\n", res.stdout)
+	require.Contains(t, res.stderr, "repld: restarting session: "+stale)
+
+	// Startup args only apply at launch.
+	run("-e", "marker = 1")
+	res = run("--project=.", probe)
+	require.Equal(t, "false\n", res.stdout)
+	require.Contains(t, res.stderr, "repld: restarting session: session was launched with")
+	require.NotContains(t, run("--project=.", probe).stderr, "repld:")
 }
 
 // TestJuliaWorldAgeDisplay: a `using` that precompiles bumps world age past run()'s

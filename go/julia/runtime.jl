@@ -218,14 +218,117 @@ function _start_interrupt_listener()
     return nothing
 end
 
+# FS events reach Revise's watcher tasks a few hundred ms after a save, so an eval
+# sent right after an edit would run stale code. Sweep tracked files' ctimes now and
+# queue changes as `Revise.revise_dir_queued` does. Revise internals: on mismatch this
+# throws and we fall back to the async watcher alone.
+function _queue_unseen_edits(R)
+    for (dir, wl) in (@lock R.revise_lock collect(R.watched_files))
+        tracked = @lock R.revise_lock collect(wl.trackedfiles)
+        for (file, id) in R.scan_changed_files(dir, wl, tracked, nothing)
+            id == R.NOPACKAGE && continue
+            path = joinpath(dir, file)
+            @lock R.revise_lock begin
+                pkgdata = R.pkgdatas[id]
+                R.hasfile(pkgdata, path) && push!(R.revision_queue, (pkgdata, relpath(path, pkgdata)))
+            end
+        end
+    end
+end
+
+function _revise()
+    isdefined(Main, :Revise) || return
+    R = Main.Revise
+    try
+        Base.invokelatest(_queue_unseen_edits, R)
+    catch
+    end
+    try
+        R.revise()
+    catch
+    end
+end
+
+# Package changes a live session can't apply, while Revise handles the rest of
+# Project.toml/Manifest.toml (versions, new deps, dev paths). Base registers a
+# package's extensions only when it loads; Revise with `extensions_stale` re-registers
+# added ones, but changed or removed ones never take effect. A manifest change can move
+# a registered (non-dev'd) package to another version. Both checks are mtime-gated:
+# they parse or re-resolve.
+const _PROJECTS = Dict{String,Tuple{Float64,Any}}()  # dev'd Project.toml => (mtime, [extensions] at load)
+const _MANIFEST_MTIME = Ref{Pair{String,Float64}}("" => 0.0)
+
+_is_mutable_pkg(path) = !startswith(path, Sys.STDLIB) &&
+    !any(d -> startswith(path, joinpath(d, "packages")), DEPOT_PATH)
+
+_extensions(proj) = get(Base.parsed_toml(proj), "extensions", nothing)
+
+function _on_load(id::Base.PkgId)
+    try
+        dir = pkgdir(Base.root_module(id))
+        (dir === nothing || !_is_mutable_pkg(dir)) && return
+        proj = joinpath(dir, "Project.toml")
+        isfile(proj) && !haskey(_PROJECTS, proj) && (_PROJECTS[proj] = (mtime(proj), _extensions(proj)))
+    catch
+    end
+    return
+end
+
+function _record_manifest()
+    proj = Base.active_project()
+    manifest = proj === nothing ? nothing : Base.project_file_manifest_path(proj)
+    _MANIFEST_MTIME[] = manifest === nothing ? ("" => 0.0) : (manifest => mtime(manifest))
+end
+
+_only_added(old, new) = old === nothing || (new !== nothing && all(((k, v),) -> get(new, k, nothing) == v, old))
+
+function _env_changes()
+    reasons = String[]
+    for (proj, (t, exts)) in _PROJECTS
+        (!isfile(proj) || mtime(proj) == t) && continue
+        new = _extensions(proj)
+        if new == exts
+            _PROJECTS[proj] = (mtime(proj), exts)
+        elseif _only_added(exts, new) && isdefined(Main, :Revise) && isdefined(Main.Revise, :extensions_stale)
+            # Revise reacts only to manifest changes, but Base reads an active project's
+            # own [extensions] from Project.toml, as a fresh interpreter would.
+            Main.Revise.extensions_stale[] = true
+            _PROJECTS[proj] = (mtime(proj), new)
+        else
+            push!(reasons, "[extensions] in " * proj * " changed after its package loaded")
+        end
+    end
+    manifest, t = _MANIFEST_MTIME[]
+    if !isempty(manifest) && mtime(manifest) != t
+        moved = String[]
+        for (id, mod) in Base.loaded_modules
+            path, now = pathof(mod), Base.locate_package(id)
+            (path === nothing || now === nothing || path == now || _is_mutable_pkg(path)) || push!(moved, id.name)
+        end
+        isempty(moved) ? _record_manifest() :
+            push!(reasons, manifest * " moved loaded packages: " * join(sort!(moved), ", "))
+    end
+    return reasons
+end
+
+# One reason per line on stdout; the daemon restarts a file-mode session that has
+# any, and warns in eval mode.
+function stale_reasons()
+    reasons = _env_changes()
+    if isdefined(Main, :Revise)
+        # Revise logs a failed revision once, then keeps running the old code.
+        failed = sort!(unique!([file for (_, file) in keys(Main.Revise.queue_errors)]))
+        isempty(failed) || push!(reasons, "Revise could not apply edits to " * join(failed, ", ") *
+            "; their old code is still live (`Revise.errors()` for details)")
+    end
+    foreach(println, reasons)
+end
+
 function run(hex_code, print_result)
     code = String(hex2bytes(hex_code))
     # Eval on a worker task so the fd-4 listener can target it.
     task = Task() do
-        try
-            isdefined(Main, :Revise) && Main.Revise.revise()
-        catch
-        end
+        _revise()
         include_string(Main, code, "repld-eval")
     end
     _CURRENT[] = task
@@ -258,5 +361,7 @@ function run(hex_code, print_result)
 end
 
 _start_interrupt_listener()
+_record_manifest()
+push!(Base.package_callbacks, _on_load)
 
 end
