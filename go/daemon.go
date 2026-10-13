@@ -228,12 +228,11 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	}
 	var reasons []string
 	if existed {
-		reasons = staleReasons(ctx, sess, req.Args)
+		reasons = staleReasons(ctx, sess, req.Args, func(s string) { emit(streamFrame{Stderr: s}) })
 	}
 	if len(reasons) > 0 {
-		// A file run promises what a fresh interpreter would print, so it restarts;
-		// an eval keeps the session's state and only warns. Without an exe the
-		// session couldn't be relaunched as it was.
+		// Policy: docs/architecture.md "Stale sessions". Without an exe the session
+		// couldn't be relaunched as it was.
 		if req.File != "" && req.Exe != "" {
 			emit(streamFrame{Stderr: "repld: restarting session: " + strings.Join(reasons, "; ") + "\n"})
 			args := req.Args
@@ -390,10 +389,8 @@ func serveDaemon(socketPath string, idleTimeout time.Duration) error {
 	return nil
 }
 
-// staleReasons lists why an existing session would not behave like a freshly
-// launched one: explicit startup args it was not launched with, plus whatever the
-// adapter's runtime reports.
-func staleReasons(ctx context.Context, sess *Session, args []string) []string {
+// staleReasons lists why sess would not behave like a freshly launched one.
+func staleReasons(ctx context.Context, sess *Session, args []string, onStderr func(string)) []string {
 	var reasons []string
 	if len(args) > 0 && !slices.Equal(args, sess.fwd) {
 		reasons = append(reasons, fmt.Sprintf("session was launched with %q, not %q", sess.fwd, args))
@@ -401,7 +398,9 @@ func staleReasons(ctx context.Context, sess *Session, args []string) []string {
 	if c, ok := sess.adapter.(staleChecker); ok {
 		var out strings.Builder
 		collect := func(data string, isStderr bool) {
-			if !isStderr {
+			if isStderr {
+				onStderr(data)
+			} else {
 				out.WriteString(data)
 			}
 		}

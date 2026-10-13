@@ -353,12 +353,13 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	writePackage(`"goodbye"`)
 	require.Equal(t, "goodbye\n", send("println(TestRevPkg.greet())").stdout)
 
-	// Revise itself logs a failed revision only once.
+	// Revise reports why a revision failed only once; later evals get the summary.
 	writePackage(`(`)
-	for range 2 {
+	for i := range 2 {
 		resp := send("println(TestRevPkg.greet())")
 		require.Equal(t, "goodbye\n", resp.stdout)
 		require.Contains(t, resp.stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+		require.Equal(t, i == 0, strings.Contains(resp.stderr, "Failed to revise "+srcFile), resp.stderr)
 	}
 }
 
@@ -394,7 +395,9 @@ func TestReviseRetriesAfterManifestChange(t *testing.T) {
 
 	write(filepath.Join(pkg, "Project.toml"), string(projectToml)+"\n[deps]\nDates = \"ade2ca70-3891-5945-98fb-dc099432e06a\"\n")
 	write(src, "module TestRevPkg\nusing Dates\nf() = Dates.year(Dates.Date(2020))\nend\n")
-	require.Contains(t, run("TestRevPkg.f()").stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+	res = run("TestRevPkg.f()")
+	require.Contains(t, res.stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+	require.Contains(t, res.stderr, "try `Pkg.resolve()`")
 
 	res = run("using Pkg; Pkg.resolve()")
 	require.NoErrorf(t, res.err, "stderr:\n%s", res.stderr)

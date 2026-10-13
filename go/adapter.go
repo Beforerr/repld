@@ -25,5 +25,6 @@ type Adapter interface {
 // session no longer matches its sources (e.g. edits a reloader failed to apply).
 type staleChecker interface {
 	// StaleCheckStmt prints one reason per line on stdout; none means current.
+	// Stderr is forwarded: the check does the runtime's pre-eval work (Revise).
 	StaleCheckStmt() string
 }
