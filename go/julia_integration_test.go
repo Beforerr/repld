@@ -358,7 +358,7 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	for i := range 2 {
 		resp := send("println(TestRevPkg.greet())")
 		require.Equal(t, "goodbye\n", resp.stdout)
-		require.Contains(t, resp.stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+		require.Contains(t, resp.stderr, "Revise could not apply edits to "+filepath.Join("src", "TestRevPkg.jl"))
 		require.Equal(t, i == 0, strings.Contains(resp.stderr, "Failed to revise "+srcFile), resp.stderr)
 	}
 }
@@ -396,7 +396,7 @@ func TestReviseRetriesAfterManifestChange(t *testing.T) {
 	write(filepath.Join(pkg, "Project.toml"), string(projectToml)+"\n[deps]\nDates = \"ade2ca70-3891-5945-98fb-dc099432e06a\"\n")
 	write(src, "module TestRevPkg\nusing Dates\nf() = Dates.year(Dates.Date(2020))\nend\n")
 	res = run("TestRevPkg.f()")
-	require.Contains(t, res.stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+	require.Contains(t, res.stderr, "Revise could not apply edits to "+filepath.Join("src", "TestRevPkg.jl"))
 	require.Contains(t, res.stderr, "try `Pkg.resolve()`")
 
 	res = run("using Pkg; Pkg.resolve()")
