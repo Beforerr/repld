@@ -236,11 +236,32 @@ function _queue_unseen_edits(R)
     end
 end
 
+function _manifest_stamp()
+    proj = Base.active_project()
+    manifest = proj === nothing ? nothing : Base.project_file_manifest_path(proj)
+    return manifest === nothing ? ("" => 0.0) : (manifest => mtime(manifest))
+end
+
+const _REVISE_MANIFEST = Ref(_manifest_stamp())
+
+# Revise requeues a failed file only on re-save, not on manifest change, so a failure
+# `Pkg.resolve()` fixes (a dev'd package's new dep) would otherwise stick.
+function _requeue_failed_on_manifest_change(R)
+    stamp = _manifest_stamp()
+    stamp == _REVISE_MANIFEST[] && return
+    _REVISE_MANIFEST[] = stamp
+    @lock R.revise_lock foreach(k -> push!(R.revision_queue, k), keys(R.queue_errors))
+end
+
 function _revise()
     isdefined(Main, :Revise) || return
     R = Main.Revise
     try
         Base.invokelatest(_queue_unseen_edits, R)
+    catch
+    end
+    try
+        _requeue_failed_on_manifest_change(R)
     catch
     end
     try
@@ -250,11 +271,10 @@ function _revise()
 end
 
 # Package changes a live session can't apply, while Revise handles the rest of
-# Project.toml/Manifest.toml (versions, new deps, dev paths). Base registers a
-# package's extensions only when it loads; Revise with `extensions_stale` re-registers
-# added ones, but changed or removed ones never take effect. A manifest change can move
-# a registered (non-dev'd) package to another version. Both checks are mtime-gated:
-# they parse or re-resolve.
+# Project.toml/Manifest.toml. Base registers a package's extensions only when it
+# loads; Revise with `extensions_stale` re-registers added ones, but changed or
+# removed ones never take effect. A manifest change can move a registered (non-dev'd)
+# package to another version. Both checks are mtime-gated: they parse or re-resolve.
 const _PROJECTS = Dict{String,Tuple{Float64,Any}}()  # dev'd Project.toml => (mtime, [extensions] at load)
 const _MANIFEST_MTIME = Ref{Pair{String,Float64}}("" => 0.0)
 
@@ -274,11 +294,7 @@ function _on_load(id::Base.PkgId)
     return
 end
 
-function _record_manifest()
-    proj = Base.active_project()
-    manifest = proj === nothing ? nothing : Base.project_file_manifest_path(proj)
-    _MANIFEST_MTIME[] = manifest === nothing ? ("" => 0.0) : (manifest => mtime(manifest))
-end
+_record_manifest() = (_MANIFEST_MTIME[] = _manifest_stamp())
 
 _only_added(old, new) = old === nothing || (new !== nothing && all(((k, v),) -> get(new, k, nothing) == v, old))
 
@@ -311,15 +327,14 @@ function _env_changes()
     return reasons
 end
 
-# One reason per line on stdout; the daemon restarts a file-mode session that has
-# any, and warns in eval mode.
 function stale_reasons()
     reasons = _env_changes()
     if isdefined(Main, :Revise)
-        # Revise logs a failed revision once, then keeps running the old code.
+        # Revise deletes changed methods before evaluating the new file, so a failure
+        # partway leaves old and new mixed.
         failed = sort!(unique!([file for (_, file) in keys(Main.Revise.queue_errors)]))
         isempty(failed) || push!(reasons, "Revise could not apply edits to " * join(failed, ", ") *
-            "; their old code is still live (`Revise.errors()` for details)")
+            "; live code may mix old and new definitions (`Revise.errors()` for details)")
     end
     foreach(println, reasons)
 end

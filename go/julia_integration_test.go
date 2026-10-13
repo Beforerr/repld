@@ -362,6 +362,47 @@ func TestRevisePicksUpPackageChanges(t *testing.T) {
 	}
 }
 
+// A dep added to a dev'd package loads only after `Pkg.resolve()`; the failed
+// revision must then apply without a re-save.
+func TestReviseRetriesAfterManifestChange(t *testing.T) {
+	t.Parallel()
+	socketPath := sharedDaemon(t)
+
+	dir := sessionCwd(t)
+	env, pkg := filepath.Join(dir, "env"), filepath.Join(dir, "pkg")
+	require.NoError(t, os.Mkdir(env, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(pkg, "src"), 0755))
+	write := func(path, text string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(path, []byte(text), 0644))
+	}
+	projectToml, err := os.ReadFile(filepath.Join("testdata", "TestRevPkg", "Project.toml"))
+	require.NoError(t, err)
+	write(filepath.Join(pkg, "Project.toml"), string(projectToml))
+	src := filepath.Join(pkg, "src", "TestRevPkg.jl")
+	write(src, "module TestRevPkg\nf() = 1\nend\n")
+	const uuid = `"12345678-1234-1234-1234-123456789abc"`
+	write(filepath.Join(env, "Project.toml"), "[deps]\nTestRevPkg = "+uuid+"\n")
+	write(filepath.Join(env, "Manifest.toml"), "manifest_format = \"2.0\"\n\n[[deps.TestRevPkg]]\npath = \"../pkg\"\nuuid = "+uuid+"\nversion = \"0.1.0\"\n")
+
+	run := func(code string) cliResult {
+		t.Helper()
+		return repldCLI(t, socketPath, dir, "julia", "--project="+env, "-e", code)
+	}
+	res := run("using TestRevPkg; print(TestRevPkg.f())")
+	require.Equal(t, "1", res.stdout, res.stderr)
+
+	write(filepath.Join(pkg, "Project.toml"), string(projectToml)+"\n[deps]\nDates = \"ade2ca70-3891-5945-98fb-dc099432e06a\"\n")
+	write(src, "module TestRevPkg\nusing Dates\nf() = Dates.year(Dates.Date(2020))\nend\n")
+	require.Contains(t, run("TestRevPkg.f()").stderr, "Revise could not apply edits to src/TestRevPkg.jl")
+
+	res = run("using Pkg; Pkg.resolve()")
+	require.NoErrorf(t, res.err, "stderr:\n%s", res.stderr)
+	res = run("print(TestRevPkg.f())")
+	require.Equal(t, "2020", res.stdout, res.stderr)
+	require.NotContains(t, res.stderr, "repld:")
+}
+
 // A file run must print what a fresh interpreter would, so a session that can't
 // restarts first; an eval keeps the session's state and only warns.
 func TestStaleSessionFileRestartsEvalWarns(t *testing.T) {
