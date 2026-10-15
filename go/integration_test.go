@@ -212,8 +212,13 @@ type cliResult struct {
 
 func repldCLI(t *testing.T, socketPath, cwd string, args ...string) cliResult {
 	t.Helper()
+	return repldCLIEnv(t, socketPath, cwd, os.Environ(), args...)
+}
+
+func repldCLIEnv(t *testing.T, socketPath, cwd string, env []string, args ...string) cliResult {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], append([]string{"--socket", socketPath}, args...)...)
-	cmd.Env = append(os.Environ(), "TEST_CLI=1")
+	cmd.Env = append(env, "TEST_CLI=1")
 	cmd.Dir = cwd
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

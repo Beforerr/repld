@@ -62,6 +62,28 @@ func TestPythonSessionsAreKeyedByInterpreter(t *testing.T) {
 	require.Equal(t, "b\n", send(pyB, `print(x)`).stdout)
 }
 
+// The daemon outlives the shell that started it; sessions must still see the
+// calling client's PATH and env, as a directly launched interpreter would.
+func TestSessionUsesClientEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script interpreter wrapper is unix-only")
+	}
+	socketPath, pythonExe := pythonTestDaemon(t)
+
+	bin := t.TempDir()
+	wrapper := fmt.Sprintf("#!/bin/sh\nREPLD_VIA_WRAPPER=1 exec %q \"$@\"\n", pythonExe)
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "python3"), []byte(wrapper), 0755))
+	env := append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REPLD_CLIENT_MARK=client",
+	)
+
+	res := repldCLIEnv(t, socketPath, sessionCwd(t), env, "python3", "-c",
+		`import os; print(os.environ.get("REPLD_VIA_WRAPPER"), os.environ.get("REPLD_CLIENT_MARK"))`)
+	require.NoErrorf(t, res.err, "stderr:\n%s", res.stderr)
+	require.Equal(t, "1 client\n", res.stdout)
+}
+
 func TestPythonFileEvalArgsAndState(t *testing.T) {
 	socketPath, _ := pythonTestDaemon(t)
 

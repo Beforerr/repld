@@ -498,7 +498,7 @@ func TestKillRunsAtexitHooks(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 	sess := newSession("julia", newSentinel(), nil, nil)
-	require.NoError(t, sess.start("", cwd))
+	require.NoError(t, sess.start("", cwd, nil))
 
 	marker := filepath.Join(t.TempDir(), "atexit.marker")
 	require.NoError(t, sess.execute(context.Background(), fmt.Sprintf(`atexit(() -> write(%q, "bye"))`, marker), false, nil))

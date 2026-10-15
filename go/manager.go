@@ -138,7 +138,7 @@ func (m *SessionManager) openLogFile(key sessionKey) *os.File {
 
 // forwarded args apply only when a session is first created;
 // a live session for the key is reused as-is.
-func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []string, ownerPID int, ownerStart int64) (*Session, error) {
+func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd, env []string, ownerPID int, ownerStart int64) (*Session, error) {
 	_, known := langs[lang]
 	key := m.key(lang, session, cwd, exe)
 
@@ -167,7 +167,7 @@ func (m *SessionManager) getOrCreate(lang, cwd, session, exe string, fwd []strin
 		}
 
 		sess = newSession(lang, newSentinel(), fwd, m.openLogFile(key))
-		if err := sess.start(exe, cwd); err != nil {
+		if err := sess.start(exe, cwd, env); err != nil {
 			return nil, err
 		}
 

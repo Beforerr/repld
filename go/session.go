@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,7 +72,7 @@ func newSession(lang, sentinel string, fwd []string, logFile *os.File) *Session 
 	}
 }
 
-func (s *Session) start(exe string, workDir string) error {
+func (s *Session) start(exe, workDir string, env []string) error {
 	if exe == "" {
 		exe = s.adapter.DefaultExe()
 	}
@@ -129,7 +130,10 @@ func (s *Session) start(exe string, workDir string) error {
 	}
 	defer ln.Close()
 	token := newSentinel()
-	cmd.Env = append(os.Environ(),
+	if env == nil {
+		env = os.Environ()
+	}
+	cmd.Env = append(slices.Clip(env),
 		"REPLD_CONTROL_ADDR="+ln.Addr().String(),
 		"REPLD_CONTROL_TOKEN="+token,
 	)

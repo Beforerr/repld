@@ -221,7 +221,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 	if req.Fresh {
 		state.manager.restart(req.Lang, req.Session, req.Cwd, req.Exe)
 	}
-	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args, req.OwnerPID, req.OwnerStart)
+	sess, err := state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, req.Args, req.Env, req.OwnerPID, req.OwnerStart)
 	if err != nil {
 		emit(streamFrame{Done: true, Error: err.Error()})
 		return
@@ -240,7 +240,7 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 				args = sess.fwd
 			}
 			state.manager.restart(req.Lang, req.Session, req.Cwd, req.Exe)
-			if sess, err = state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, args, req.OwnerPID, req.OwnerStart); err != nil {
+			if sess, err = state.manager.getOrCreate(req.Lang, req.Cwd, req.Session, req.Exe, args, req.Env, req.OwnerPID, req.OwnerStart); err != nil {
 				emit(streamFrame{Done: true, Error: err.Error()})
 				return
 			}

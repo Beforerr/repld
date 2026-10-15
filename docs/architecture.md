@@ -28,21 +28,17 @@ from the ones it was launched with, or the adapter's runtime reports reasons via
 optional `staleChecker` (`go/adapter.go`) — the daemon restarts it first and names
 the reasons on stderr. An eval (`-e`/`-c`) keeps the session's state and only warns.
 
-The engine in `go/` is language-agnostic; per-language specifics live behind
-`Adapter` (`go/adapter.go`), implemented in `go/julia/`, `go/python/`, `go/r/`, and `go/wolfram/`. `langs`
-(`go/config.go`) maps a language name → adapter + eval/print flag spellings.
-
 ## Modes
 
-**Client mode** (default): resolves lang+exe, sends a JSON request (carrying
-`lang` and `exe`) over the single socket `~/.local/share/repld/daemon.sock`;
-re-execs itself as `daemon` if none is running. A relative exe path is abs-ified
-client-side (`absExe`); a bare name is looked up in PATH on the daemon.
+**Client mode** (default): sends a `protocolRequest` over the single socket
+`~/.local/share/repld/daemon.sock`; re-execs itself as `daemon` if none is
+running. Exe (`absExe`) and env come from the client; a new session launches
+with them, never the daemon's, which belong to whichever shell first started it.
 
-**Daemon mode** (`daemon` subcommand): one language-agnostic server
-(`go/daemon.go`). The per-session `Adapter` is chosen from each request's `lang` (`SessionManager.getOrCreate`).
-Runs until `stop` (or optional `daemon --idle-timeout SECS`; default 0 = never).
-
+**Daemon mode** (`daemon` subcommand): one server (`go/daemon.go`) for all
+languages; each request's `lang` picks the session's `Adapter`
+(`SessionManager.getOrCreate`). Runs until `stop` (or optional
+`daemon --idle-timeout SECS`; default 0 = never).
 
 **Session** (`go/session.go`): wraps one interpreter subprocess. The adapter
 supplies the launch argv, the embedded runtime source + its load statement, the
@@ -52,8 +48,7 @@ Python `exec(bytes.fromhex("..."))`, R `parse(text = ...)`, Wolfram `ToExpressio
 
 ## Eval wire protocol (session ↔ interpreter subprocess)
 
-Language-agnostic contract every runtime implements (the adapter supplies the
-language syntax for the sentinel/eval wrapper). Three channels:
+Contract every runtime implements. Three channels:
 
 - **stdout / stderr** — separate OS pipes Go owns directly; user output only,
   streamed as NDJSON `chunk`/`stderr` frames. Captures C-level/subprocess writes
@@ -99,15 +94,14 @@ session is a no-op.
 
 - `go/main.go` — CLI arg scanner (`parseArgs`: own flags vs forwarded switches), client send/receive
 - `go/config.go` — `langs` registry (name→adapter, eval/print flag spellings), `langForExe`/`resolveLang`, single socket path
-- `go/adapter.go` — `Adapter` interface: the language-execution seam (launch argv, runtime, eval wrap, sentinel, `EvalFileStmt` for in-session file eval); optional `staleChecker`
+- `go/adapter.go` — `Adapter` interface (incl. `EvalFileStmt`); optional `staleChecker`
 - `go/daemon.go` — request dispatch, idle watchdog, client-disconnect→interrupt watcher
 - `go/session.go` — `Session`: subprocess lifecycle, `executeRaw` (sentinel + control protocol), `execute`, interrupt, graceful `kill`
 - `go/manager.go` — `SessionManager`: session map, routing/keying, per-session logs, owner-lease reaper
 - `go/owner.go` — owner-pid resolution (client) + liveness/pid-reuse check (daemon)
-- `go/julia/`, `go/python/`, `go/r/`, `go/wolfram/` — per-language `Adapter` + embedded runtime: dials the control socket, evals code and writes the control frame, handles errors
+- `go/julia/`, `go/python/`, `go/r/`, `go/wolfram/` — per-language `Adapter` + embedded runtime
 
 ## Adding a language
 
-Implement `Adapter` (`go/adapter.go`) plus its in-interpreter runtime (dials the
-control socket, evals, writes the control frame). Register it in `langs`
-(`go/config.go`). Nothing in the engine changes.
+Implement `Adapter` plus a runtime speaking the wire protocol above; register it
+in `langs`. Nothing in the engine changes.

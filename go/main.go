@@ -66,6 +66,7 @@ type protocolRequest struct {
 	RequireExisting bool     `json:"require_existing,omitempty"`
 	File            string   `json:"file,omitempty"`
 	FileArgs        []string `json:"file_args,omitempty"`
+	Env             []string `json:"env,omitempty"`         // client env; applies when the session is created
 	OwnerPID        int      `json:"owner_pid,omitempty"`   // session owner; its exit auto-closes the session
 	OwnerStart      int64    `json:"owner_start,omitempty"` // owner start time, guards against pid reuse
 }
@@ -157,6 +158,7 @@ func cmdEval(socketPath, lang, code, exe, session string, printResult, fresh boo
 		PrintResult:     printResult,
 		Fresh:           fresh,
 		RequireExisting: lang == "" && exe == "" && session != "",
+		Env:             os.Environ(),
 		OwnerPID:        ownerPID,
 		OwnerStart:      ownerStart,
 	}
@@ -182,6 +184,7 @@ func cmdEvalFile(socketPath, lang, file, exe, session string, fresh bool, traceL
 		Fresh:      fresh,
 		File:       abs,
 		FileArgs:   fileArgs,
+		Env:        os.Environ(),
 		OwnerPID:   ownerPID,
 		OwnerStart: ownerStart,
 	}, true)
@@ -457,6 +460,7 @@ func parseTarget(p parsed) subTarget {
 	return tg
 }
 
+// absExe resolves against the client's cwd and PATH, not the daemon's.
 func absExe(exe string) string {
 	if exe == "" || filepath.IsAbs(exe) {
 		return exe
@@ -464,6 +468,12 @@ func absExe(exe string) string {
 	if strings.ContainsRune(exe, os.PathSeparator) || strings.HasPrefix(exe, ".") {
 		if a, err := filepath.Abs(exe); err == nil {
 			return a
+		}
+		return exe
+	}
+	if a, err := exec.LookPath(exe); err == nil {
+		if abs, err := filepath.Abs(a); err == nil {
+			return abs
 		}
 	}
 	return exe
