@@ -266,12 +266,16 @@ func handleStreamingEval(state *daemonState, req protocolRequest, conn net.Conn)
 		}
 	}
 	// File mode: the adapter's snippet is just code through the normal eval path.
-	code, printResult := req.Code, req.PrintResult
+	code, logAs, printResult := req.Code, req.Code, req.PrintResult
 	if req.File != "" {
 		code = sess.adapter.EvalFileStmt(req.File, req.FileArgs)
+		logAs = "file " + req.File
+		for _, a := range req.FileArgs {
+			logAs += " " + strconv.Quote(a)
+		}
 		printResult = false
 	}
-	err = sess.execute(ctx, code, printResult, onChunk)
+	err = sess.execute(ctx, code, logAs, printResult, onChunk)
 	if err != nil {
 		if !sess.isAlive() {
 			state.manager.remove(req.Lang, req.Session, req.Cwd, req.Exe)
@@ -404,7 +408,7 @@ func staleReasons(ctx context.Context, sess *Session, args []string, onStderr fu
 				out.WriteString(data)
 			}
 		}
-		if sess.execute(ctx, c.StaleCheckStmt(), false, collect) == nil {
+		if sess.execute(ctx, c.StaleCheckStmt(), "", false, collect) == nil {
 			for line := range strings.Lines(out.String()) {
 				if line = strings.TrimSpace(line); line != "" {
 					reasons = append(reasons, line)

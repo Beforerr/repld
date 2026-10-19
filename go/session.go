@@ -497,7 +497,8 @@ func (s *Session) executeRaw(code string, onChunk func(data string, isStderr boo
 }
 
 // execute runs one eval to completion. Binding cancellation to ctx (caller's lifetime)
-func (s *Session) execute(ctx context.Context, code string, printResult bool, onChunk func(data string, isStderr bool)) error {
+// logAs is the log header; "" keeps internal evals out of the session log.
+func (s *Session) execute(ctx context.Context, code, logAs string, printResult bool, onChunk func(data string, isStderr bool)) error {
 	select {
 	case s.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -522,11 +523,15 @@ func (s *Session) execute(ctx context.Context, code string, printResult bool, on
 	hexCode := hex.EncodeToString([]byte(code))
 	wrapped := s.adapter.WrapEval(hexCode, printResult)
 
+	logFile := s.logFile
+	if logAs == "" {
+		logFile = nil
+	}
 	sink := onChunk
-	if s.logFile != nil {
-		fmt.Fprintf(s.logFile, "[%s] %s> %s\n", time.Now().Format("15:04:05"), s.lang, code)
+	if logFile != nil {
+		fmt.Fprintf(logFile, "[%s] %s> %s\n", time.Now().Format("15:04:05"), s.lang, logAs)
 		sink = func(data string, isStderr bool) {
-			io.WriteString(s.logFile, data)
+			io.WriteString(logFile, data)
 			if onChunk != nil {
 				onChunk(data, isStderr)
 			}
@@ -541,13 +546,13 @@ func (s *Session) execute(ctx context.Context, code string, printResult bool, on
 		return err
 	}
 	if evalErr != nil {
-		if s.logFile != nil {
-			fmt.Fprintf(s.logFile, "\n%s\n\n", evalErr.full)
+		if logFile != nil {
+			fmt.Fprintf(logFile, "\n%s\n\n", evalErr.full)
 		}
 		return evalErr
 	}
-	if s.logFile != nil {
-		io.WriteString(s.logFile, "\n\n")
+	if logFile != nil {
+		io.WriteString(logFile, "\n\n")
 	}
 	return nil
 }

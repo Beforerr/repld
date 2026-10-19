@@ -501,7 +501,7 @@ func TestKillRunsAtexitHooks(t *testing.T) {
 	require.NoError(t, sess.start("", cwd, nil))
 
 	marker := filepath.Join(t.TempDir(), "atexit.marker")
-	require.NoError(t, sess.execute(context.Background(), fmt.Sprintf(`atexit(() -> write(%q, "bye"))`, marker), false, nil))
+	require.NoError(t, sess.execute(context.Background(), fmt.Sprintf(`atexit(() -> write(%q, "bye"))`, marker), "", false, nil))
 
 	sess.kill()
 	require.FileExists(t, marker, "graceful shutdown should run atexit hooks, not SIGKILL")
