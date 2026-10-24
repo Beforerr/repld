@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const startupTimeout = 120.0
@@ -320,8 +322,30 @@ func sentinelOverlap(buf []byte, sentinel string) int {
 	return 0
 }
 
-// Streams output until the closing sentinel line.
-// Only the trailing run of bytes that could begin the sentinel is held back.
+// Length of a trailing incomplete UTF-8 sequence. Chunks become JSON strings
+func partialRuneSuffix(b []byte) int {
+	for k := 1; k < utf8.UTFMax && k <= len(b); k++ {
+		if i := len(b) - k; utf8.RuneStart(b[i]) {
+			if utf8.FullRune(b[i:]) {
+				return 0
+			}
+			return k
+		}
+	}
+	return 0
+}
+
+// Bytes at the end of an unterminated line that must not be emitted yet
+func (s *Session) holdback(p []byte) int {
+	if q := bytes.TrimRight(p, "\r"); len(q) < len(p) && bytes.HasSuffix(q, []byte(s.sentinel)) {
+		return len(p) - len(q) + len(s.sentinel)
+	}
+	n := sentinelOverlap(p, s.sentinel)
+	return n + partialRuneSuffix(p[:len(p)-n])
+}
+
+// Streams output until the closing sentinel line. Only unemitted bytes of the
+// current line are kept; holdback guarantees they contain any sentinel in full.
 func (s *Session) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(string, bool)) (tail string, err error) {
 	const maxTail = 64 * 1024
 	var buf []byte
@@ -338,46 +362,34 @@ func (s *Session) scanToSentinel(r *bufio.Reader, isStderr bool, emit func(strin
 		}
 	}
 
-	var line []byte // bytes since the last '\n' (newline excluded)
-	sent := 0       // count of `line` already streamed
-
+	read := make([]byte, 32*1024)
+	var pending []byte
 	for {
-		b, rerr := r.ReadByte()
-		var chunk []byte
-		if rerr == nil {
-			chunk = append(chunk, b)
-			if n := r.Buffered(); n > 0 {
-				more := make([]byte, n)
-				m, _ := io.ReadFull(r, more)
-				chunk = append(chunk, more[:m]...)
+		n, rerr := r.Read(read)
+		chunk := read[:n]
+		for len(chunk) > 0 {
+			i := bytes.IndexByte(chunk, '\n')
+			if i < 0 {
+				pending = append(pending, chunk...)
+				break
 			}
-		}
-
-		for _, c := range chunk {
-			if c != '\n' {
-				line = append(line, c)
-				continue
-			}
-			raw := strings.TrimRight(string(line), "\r")
-			if strings.HasSuffix(raw, s.sentinel) {
-				if prefix := raw[:len(raw)-len(s.sentinel)]; sent < len(prefix) {
-					send([]byte(prefix[sent:]))
-				}
+			pending = append(pending, chunk[:i]...)
+			chunk = chunk[i+1:]
+			if raw := bytes.TrimRight(pending, "\r"); bytes.HasSuffix(raw, []byte(s.sentinel)) {
+				send(raw[:len(raw)-len(s.sentinel)])
 				return string(buf), nil
 			}
-			send(line[sent:])
-			send([]byte{'\n'})
-			line = line[:0]
-			sent = 0
+			send(append(pending, '\n'))
+			pending = pending[:0]
 		}
 
-		if safe := len(line) - sentinelOverlap(line, s.sentinel); safe > sent {
-			send(line[sent:safe])
-			sent = safe
+		if safe := len(pending) - s.holdback(pending); safe > 0 {
+			send(pending[:safe])
+			pending = append(pending[:0], pending[safe:]...)
 		}
 
 		if rerr != nil {
-			send(line[sent:])
+			send(pending)
 			return string(buf), rerr
 		}
 	}

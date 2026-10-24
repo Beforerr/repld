@@ -11,70 +11,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestScanToSentinel_StreamsPartialLine(t *testing.T) {
-	s := &Session{sentinel: "__END__"}
-	pr, pw := io.Pipe()
-
-	var mu sync.Mutex
-	var got []string
-	emit := func(data string, _ bool) { mu.Lock(); got = append(got, data); mu.Unlock() }
-	joined := func() string { mu.Lock(); defer mu.Unlock(); return strings.Join(got, "") }
-
-	done := make(chan string, 1)
-	go func() {
-		tail, _ := s.scanToSentinel(bufio.NewReader(pr), false, emit)
-		done <- tail
-	}()
-
-	_, err := pw.Write([]byte("DOT"))
-	require.NoError(t, err)
-	// Streams before any newline exists in the stream.
-	require.Eventually(t, func() bool { return joined() == "DOT" }, time.Second, 5*time.Millisecond,
-		"partial line should stream before the sentinel arrives")
-
-	// Sentinel appended directly onto the same partial line must terminate the
-	// scan and never leak into user output.
-	_, err = pw.Write([]byte("__END__\n"))
-	require.NoError(t, err)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("scan did not return after sentinel")
+// Output before the final write must stream except the held-back tail, which
+// never leaks; the final write completes it and ends the scan.
+func TestScanToSentinel_HoldsBackTail(t *testing.T) {
+	cases := []struct {
+		name        string
+		writes      []string
+		held, final string
+	}{
+		{"sentinel prefix", []string{"AB__EN", "D__\n"}, "AB", "AB"},
+		{"split rune", []string{"m\xc2", "\xb2__END__\n"}, "m", "m²"},
+		// Windows text-mode "\r\n" split across reads
+		{"sentinel CR before LF", []string{"out__END__\r", "\n"}, "out", "out"},
 	}
-	require.Equal(t, "DOT", joined(), "sentinel must be stripped, not emitted")
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{sentinel: "__END__"}
+			pr, pw := io.Pipe()
 
-// partial sentinel never reaches users, while everything before it streams
-func TestScanToSentinel_HoldsBackSentinelPrefix(t *testing.T) {
-	s := &Session{sentinel: "__END__"}
-	pr, pw := io.Pipe()
+			var mu sync.Mutex
+			var got []string
+			emit := func(data string, _ bool) { mu.Lock(); got = append(got, data); mu.Unlock() }
+			joined := func() string { mu.Lock(); defer mu.Unlock(); return strings.Join(got, "") }
 
-	var mu sync.Mutex
-	var got []string
-	emit := func(data string, _ bool) { mu.Lock(); got = append(got, data); mu.Unlock() }
-	joined := func() string { mu.Lock(); defer mu.Unlock(); return strings.Join(got, "") }
+			done := make(chan struct{})
+			go func() {
+				s.scanToSentinel(bufio.NewReader(pr), false, emit)
+				close(done)
+			}()
 
-	done := make(chan string, 1)
-	go func() {
-		tail, _ := s.scanToSentinel(bufio.NewReader(pr), false, emit)
-		done <- tail
-	}()
-
-	_, err := pw.Write([]byte("AB__EN"))
-	require.NoError(t, err)
-	require.Eventually(t, func() bool { return joined() == "AB" }, time.Second, 5*time.Millisecond)
-	// Give a beat to ensure the held-back prefix is not flushed late.
-	time.Sleep(50 * time.Millisecond)
-	require.Equal(t, "AB", joined(), "sentinel prefix must not leak")
-
-	_, err = pw.Write([]byte("D__\n")) // completes the sentinel
-	require.NoError(t, err)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("scan did not return after sentinel")
+			last := len(tc.writes) - 1
+			for _, w := range tc.writes[:last] {
+				_, err := pw.Write([]byte(w))
+				require.NoError(t, err)
+			}
+			require.Eventually(t, func() bool { return joined() == tc.held }, time.Second, 5*time.Millisecond)
+			_, err := pw.Write([]byte(tc.writes[last]))
+			require.NoError(t, err)
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("scan did not return after sentinel")
+			}
+			require.Equal(t, tc.final, joined())
+		})
 	}
-	require.Equal(t, "AB", joined())
 }
 
 func TestScanToSentinel_LinesAndTail(t *testing.T) {
